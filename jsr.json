@@ -1,0 +1,21 @@
+{
+  "name": "@paulmillr/micro-zkproofs",
+  "version": "0.1.0",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "imports": {
+    "@noble/curves": "jsr:@noble/curves@1.8.1",
+    "@noble/hashes": "jsr:@noble/hashes@1.7.1",
+    "@paulmillr/micro-wrkr": "jsr:@paulmillr/micro-wrkr@0.1.0"
+  },
+  "publish": {
+    "include": [
+      "src",
+      "jsr.json",
+      "LICENSE",
+      "README.md"
+    ]
+  },
+  "license": "MIT"
+}

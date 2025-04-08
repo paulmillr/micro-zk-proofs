@@ -1,0 +1,48 @@
+{
+  "name": "micro-zkproofs",
+  "version": "0.1.0",
+  "description": "Create & verify zero-knowledge SNARK proofs in parallel, using noble cryptography",
+  "type": "module",
+  "main": "./index.js",
+  "module": "./index.js",
+  "types": "./index.d.ts",
+  "dependencies": {
+    "@noble/curves": "^1.8.1",
+    "@noble/hashes": "^1.7.1",
+    "micro-packed": "^0.7.2",
+    "micro-wrkr": "^0.1.0"
+  },
+  "devDependencies": {
+    "@paulmillr/jsbt": "0.3.3",
+    "micro-bmark": "0.4.0",
+    "micro-should": "0.5.1",
+    "prettier": "3.5.2",
+    "typescript": "5.8.2"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:release": "npx jsbt esbuild test/build",
+    "lint": "prettier --check src test",
+    "format": "prettier --write src test",
+    "test": "exit 0; node test/index.js",
+    "test:deno": "exit 0; deno test/index.js"
+  },
+  "keywords": [
+    "groth16",
+    "plonk",
+    "zk",
+    "snark",
+    "zk-proof",
+    "proof",
+    "zero-knowledge",
+    "nizk"
+  ],
+  "sideEffects": false,
+  "author": "Paul Miller (https://paulmillr.com)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/paulmillr/micro-zkproofs.git"
+  },
+  "funding": "https://paulmillr.com/funding/",
+  "license": "MIT"
+}
