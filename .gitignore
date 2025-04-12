@@ -6,3 +6,8 @@ node_modules
 *.js.map
 *.tgz
 /test/build
+/examples/js/output/
+/examples/js/circom-js/
+/examples/wasm-v1/wasmsnark/
+/examples/wasm-v2/circom-wasm/
+/examples/wasm-v2/output/

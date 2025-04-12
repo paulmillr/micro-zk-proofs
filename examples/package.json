@@ -1,0 +1,15 @@
+{
+  "name": "example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "js": "cd js && sh 1-init.sh && sh 2-compile.sh && node 3-run.js",
+    "wasm-v1": "cd wasm-v1 && sh 1-init.sh && sh 2-compile.sh && node 3-run.js",
+    "wasm-v2": "cd wasm-v2 && sh 1-init.sh && sh 2-compile.sh && node 3-run.js",
+    "all": "npm install && npm run js && npm run wasm-v1 && npm run wasm-v2"
+  },
+  "dependencies": {
+    "micro-packed": "^0.7.2",
+    "micro-zk-proofs": "file:.."
+  }
+}
