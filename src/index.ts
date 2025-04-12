@@ -1,10 +1,11 @@
+/*! micro-zk-proofs - MIT License (c) 2025 Paul Miller (paulmillr.com) */
 import { bn254 as nobleBn254 } from '@noble/curves/bn254';
 // import { bls12_381 as nobleBls12 } from '@noble/curves/bls12-381';
-import { randomBytes } from '@noble/hashes/utils';
-import { bytesToNumberBE } from '@noble/curves/abstract/utils';
 import { type CurveFn as BLSCurveFn } from '@noble/curves/abstract/bls';
 import type { Fp2 } from '@noble/curves/abstract/tower';
+import { bytesToNumberBE } from '@noble/curves/abstract/utils';
 import type { ProjConstructor, ProjPointType } from '@noble/curves/abstract/weierstrass';
+import { randomBytes } from '@noble/hashes/utils';
 import type { MSMInput } from './msm-worker.ts';
 import { modifyArgs } from './msm.js';
 
@@ -102,7 +103,7 @@ export interface PointsWithCoders {
   G1c: Coder<ProjPointType<bigint>, G1Point>;
   G2c: Coder<ProjPointType<Fp2>, G2Point>;
 }
-export type VkProver = {
+export type ProvingKey = {
   protocol?: 'groth';
   nVars: number;
   nPublic: number;
@@ -127,7 +128,7 @@ export type VkProver = {
   hExps: G1Point[];
 };
 
-export type VkVerifier = {
+export type VerificationKey = {
   protocol?: 'groth';
   nPublic: number;
   IC: G1Point[];
@@ -176,16 +177,12 @@ export interface SnarkConstructorOutput {
       circuit: CircuitInfo,
       rnd?: RandFn
     ): {
-      pkey: VkProver;
-      vkey: VkVerifier;
+      pkey: ProvingKey;
+      vkey: VerificationKey;
       toxic: ToxicWaste | undefined;
     };
-    createProof(
-      pkey: VkProver,
-      witness: bigint[],
-      rnd?: RandFn
-    ): Promise<ProofWithSignals>;
-    verifyProof(vkey: VkVerifier, proofWithSignals: ProofWithSignals): boolean;
+    createProof(pkey: ProvingKey, witness: bigint[], rnd?: RandFn): Promise<ProofWithSignals>;
+    verifyProof(vkey: VerificationKey, proofWithSignals: ProofWithSignals): boolean;
   };
 }
 
@@ -347,7 +344,7 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
     },
   };
 
-  function calculateH(proof: VkProver, witness: bigint[]) {
+  function calculateH(proof: ProvingKey, witness: bigint[]) {
     const m = proof.domainSize;
     const { pA, pB, pC } = poly.sumABC(m, witness, proof.polsA, proof.polsB, proof.polsC);
     // FFT only needed to optimize multiplication O(n²) to O(n log n)
@@ -437,7 +434,7 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
         for (let i = 1, eT = toxic.t; i < maxH; i++, eT = Fr.mul(eT, toxic.t))
           hExps.push(G1c.encode(G1.BASE.multiplyUnsafe(Fr.mul(eT, zod))));
 
-        const vk_proof: VkProver = {
+        const pkey: ProvingKey = {
           protocol: 'groth',
           nVars: circuit.nVars,
           nPublic,
@@ -467,7 +464,7 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
           //
           hExps,
         };
-        const vk_verifier: VkVerifier = {
+        const vkey: VerificationKey = {
           protocol: 'groth',
           nPublic: circuit.nPubInputs + circuit.nOutputs,
           IC,
@@ -478,13 +475,13 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
           vk_delta_2: deltaP2,
         };
         return {
-          pkey: vk_proof,
-          vkey: vk_verifier,
+          pkey,
+          vkey,
           toxic: opts.unsafePreserveToxic ? toxic : undefined,
         };
       },
       async createProof(
-        pkey: VkProver,
+        pkey: ProvingKey,
         witness: bigint[],
         rnd: RandFn = randomBytes
       ): Promise<ProofWithSignals> {
@@ -532,7 +529,7 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
           publicSignals: witness.slice(1, pkey.nPublic + 1),
         };
       },
-      verifyProof(vkey: VkVerifier, proofWithSignals: ProofWithSignals): boolean {
+      verifyProof(vkey: VerificationKey, proofWithSignals: ProofWithSignals): boolean {
         const { proof, publicSignals } = proofWithSignals;
         const cpub = G1.msm(vkey.IC.map(G1c.decode), [1n, ...publicSignals]);
         // old e(pi_a, pi_b) = alfa_beta * e(cpub, gamma_2) * e(pi_c, delta_2)

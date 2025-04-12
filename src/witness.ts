@@ -7,7 +7,7 @@
  * @module
  */
 
-import { pow, invert, type IField } from '@noble/curves/abstract/modular';
+import { invert, pow, type IField } from '@noble/curves/abstract/modular';
 import { bn254 as nobleBn254 } from '@noble/curves/bn254';
 import * as P from 'micro-packed';
 import { type CircuitInfo, type Constraint } from './index.js';
@@ -70,27 +70,26 @@ const select = (a: any, selectors: string[]): any => {
   return a;
 };
 type Scope = Record<string, any>;
-export function generateWitness(circuitJson: any) {
+export function generateWitness(circJson: any) {
   const P = nobleBn254.fields.Fr.ORDER;
   const MASK = nobleBn254.fields.Fr.MASK;
 
-  const signals = circuitJson.signals;
-  const components = circuitJson.components;
+  const signals = circJson.signals;
+  const components = circJson.components;
   const templates: Record<string, Function> = {};
   // Bind P & MASK directly into templates/functions, so we see dependency
-  for (let t in circuitJson.templates) {
-    templates[t] = new Function(
-      'bigInt',
-      '__P__',
-      '__MASK__',
-      'return ' + circuitJson.templates[t]
-    )(BigInt, P, MASK);
+  for (let t in circJson.templates) {
+    templates[t] = new Function('bigInt', '__P__', '__MASK__', 'return ' + circJson.templates[t])(
+      BigInt,
+      P,
+      MASK
+    );
   }
   const functions: Record<string, { params: any[]; func: Function }> = {};
-  for (let f in circuitJson.functions) {
+  for (let f in circJson.functions) {
     functions[f] = {
-      params: circuitJson.functions[f].params,
-      func: new Function('bigInt', '__P__', '__MASK__', 'return ' + circuitJson.functions[f].func)(
+      params: circJson.functions[f].params,
+      func: new Function('bigInt', '__P__', '__MASK__', 'return ' + circJson.functions[f].func)(
         BigInt,
         P,
         MASK
@@ -98,11 +97,11 @@ export function generateWitness(circuitJson: any) {
     };
   }
   function inputIdx(i: any) {
-    if (i >= circuitJson.nInputs) throw new Error('Accessing an invalid input: ' + i);
-    return circuitJson.nOutputs + 1 + i;
+    if (i >= circJson.nInputs) throw new Error('Accessing an invalid input: ' + i);
+    return circJson.nOutputs + 1 + i;
   }
   function getSignalIdx(name: any) {
-    if (circuitJson.signalName2Idx[name] !== undefined) return circuitJson.signalName2Idx[name];
+    if (circJson.signalName2Idx[name] !== undefined) return circJson.signalName2Idx[name];
     if (!isNaN(name)) return Number(name);
     throw new Error('Invalid signal identifier: ' + name);
   }
@@ -111,7 +110,7 @@ export function generateWitness(circuitJson: any) {
 
   return function (input: any) {
     patcher.patch();
-    const witness = new Array(circuitJson.nSignals);
+    const witness = new Array(circJson.nSignals);
     let currentComponent: string | undefined;
     let scopes: Scope[] = []; // scope stack
     const notInitSignals = {} as any;
@@ -233,7 +232,7 @@ export function generateWitness(circuitJson: any) {
         ctx.setSignal(s, selector, BigInt(value));
       });
     }
-    for (let i = 0; i < circuitJson.nInputs; i++) {
+    for (let i = 0; i < circJson.nInputs; i++) {
       const idx = inputIdx(i);
       if (witness[idx] === undefined)
         throw new Error('Input Signal not assigned: ' + signalNames(idx));
@@ -242,7 +241,7 @@ export function generateWitness(circuitJson: any) {
       if (witness[i] === undefined) throw new Error('Signal not assigned: ' + signalNames(i));
 
     patcher.restore();
-    return witness.slice(0, circuitJson.nVars);
+    return witness.slice(0, circJson.nVars);
   };
 }
 

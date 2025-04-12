@@ -1,5 +1,13 @@
-import { keccak_256 } from '@noble/hashes/sha3';
+/**
+ * MiMC: Efficient Encryption and Cryptographic
+ * Hashing with Minimal Multiplicative Complexity.
+ * https://eprint.iacr.org/2016/492.pdf
+ * https://crypto.ethereum.org/bounties/mimc-hash-challenge
+ * @module
+ */
+
 import { bn254 } from '@noble/curves/bn254';
+import { keccak_256 } from '@noble/hashes/sha3';
 
 const Fr = bn254.fields.Fr;
 const SEED = 'mimcsponge';

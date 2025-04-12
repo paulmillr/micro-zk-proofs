@@ -6,12 +6,11 @@
  * Using scalar as field allows to be used inside of zk-circuits.
  * @module
  */
-
-import { blake256 } from '@noble/hashes/blake1';
 import { twistedEdwards, type ExtPointType } from '@noble/curves/abstract/edwards';
-import { bn254 } from '@noble/curves/bn254';
-import { randomBytes } from '@noble/hashes/utils';
 import { bytesToNumberLE, numberToBytesLE } from '@noble/curves/abstract/utils';
+import { bn254 } from '@noble/curves/bn254';
+import { blake256 } from '@noble/hashes/blake1';
+import { randomBytes } from '@noble/hashes/utils';
 const { Fr } = bn254.fields;
 
 const babyjubjub = twistedEdwards({

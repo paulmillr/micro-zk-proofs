@@ -2,9 +2,9 @@
  * MSM parallel worker, using micro-wrkr.
  * @module
  */
-import { bn254 } from '@noble/curves/bn254';
-import { type ProjConstructor, type ProjPointType } from '@noble/curves/abstract/weierstrass';
 import type { Fp2 } from '@noble/curves/abstract/tower';
+import { type ProjConstructor, type ProjPointType } from '@noble/curves/abstract/weierstrass';
+import { bn254 } from '@noble/curves/bn254';
 import { wrkr } from 'micro-wrkr';
 
 export type MSMInput<T> = { point: ProjPointType<T>; scalar: bigint };

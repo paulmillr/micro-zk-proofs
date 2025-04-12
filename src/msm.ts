@@ -3,11 +3,11 @@
  * MSM is a fast algorithm to add & multiply many elliptic curve points at once.
  * @module
  */
+import { type IField } from '@noble/curves/abstract/modular';
+import { type ProjConstructor, type ProjPointType } from '@noble/curves/abstract/weierstrass';
 import { bn254 } from '@noble/curves/bn254';
 import { wrkr } from 'micro-wrkr';
 import { type Handlers, type MSMInput } from './msm-worker.ts';
-import { type ProjConstructor, type ProjPointType } from '@noble/curves/abstract/weierstrass';
-import { type IField } from '@noble/curves/abstract/modular';
 
 function reducePoint<T>(p: ProjConstructor<T>) {
   return (lst: ProjPointType<T>[]) =>

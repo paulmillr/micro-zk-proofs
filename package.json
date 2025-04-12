@@ -24,8 +24,8 @@
     "build:release": "npx jsbt esbuild test/build",
     "lint": "prettier --check src test",
     "format": "prettier --write src test",
-    "test": "exit 0; node test/index.js",
-    "test:deno": "exit 0; deno test/index.js"
+    "test": "node test/index.js",
+    "test:deno": "deno test/index.js"
   },
   "keywords": [
     "groth16",
