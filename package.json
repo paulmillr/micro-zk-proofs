@@ -1,5 +1,5 @@
 {
-  "name": "micro-zkproofs",
+  "name": "micro-zk-proofs",
   "version": "0.1.0",
   "description": "Create & verify zero-knowledge SNARK proofs in parallel, using noble cryptography",
   "type": "module",
@@ -41,7 +41,7 @@
   "author": "Paul Miller (https://paulmillr.com)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/paulmillr/micro-zkproofs.git"
+    "url": "git+https://github.com/paulmillr/micro-zk-proofs.git"
   },
   "funding": "https://paulmillr.com/funding/",
   "license": "MIT"

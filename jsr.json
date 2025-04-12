@@ -1,5 +1,5 @@
 {
-  "name": "@paulmillr/micro-zkproofs",
+  "name": "@paulmillr/micro-zk-proofs",
   "version": "0.1.0",
   "exports": {
     ".": "./src/index.ts"

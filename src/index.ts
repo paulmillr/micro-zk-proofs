@@ -164,6 +164,11 @@ export interface ToxicWaste {
   kdelta: bigint;
 }
 
+export interface ProofWithSignals {
+  proof: GrothProof;
+  publicSignals: bigint[];
+}
+
 export interface SnarkConstructorOutput {
   utils: PointsWithCoders;
   groth: {
@@ -171,16 +176,16 @@ export interface SnarkConstructorOutput {
       circuit: CircuitInfo,
       rnd?: RandFn
     ): {
-      vk_proof: VkProver;
-      vk_verifier: VkVerifier;
+      pkey: VkProver;
+      vkey: VkVerifier;
       toxic: ToxicWaste | undefined;
     };
-    proof(
-      prover: VkProver,
+    createProof(
+      pkey: VkProver,
       witness: bigint[],
       rnd?: RandFn
-    ): Promise<{ proof: GrothProof; publicSignals: bigint[] }>;
-    verify(verifier: VkVerifier, proof: GrothProof, publicSignals: bigint[]): boolean;
+    ): Promise<ProofWithSignals>;
+    verifyProof(vkey: VkVerifier, proofWithSignals: ProofWithSignals): boolean;
   };
 }
 
@@ -473,30 +478,30 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
           vk_delta_2: deltaP2,
         };
         return {
-          vk_proof,
-          vk_verifier,
+          pkey: vk_proof,
+          vkey: vk_verifier,
           toxic: opts.unsafePreserveToxic ? toxic : undefined,
         };
       },
-      async proof(
-        prover: VkProver,
+      async createProof(
+        pkey: VkProver,
         witness: bigint[],
         rnd: RandFn = randomBytes
-      ): Promise<{ proof: GrothProof; publicSignals: bigint[] }> {
+      ): Promise<ProofWithSignals> {
         witness = witness.map(Fr.create);
         // Blinding salt for zero-knowledge
         const r = Fr.create(Frandom(rnd));
         const s = Fr.create(Frandom(rnd));
-        const A = prover.A.map(G1c.decode);
-        const B1 = prover.B1.map(G1c.decode);
-        const B2 = prover.B2.map(G2c.decode);
-        const C = prover.C.map(G1c.decode);
-        const hExps = prover.hExps.map(G1c.decode);
-        const vk_alfa_1 = G1c.decode(prover.vk_alfa_1);
-        const vk_beta_1 = G1c.decode(prover.vk_beta_1);
-        const vk_beta_2 = G2c.decode(prover.vk_beta_2);
-        const vk_delta_1 = G1c.decode(prover.vk_delta_1);
-        const vk_delta_2 = G2c.decode(prover.vk_delta_2);
+        const A = pkey.A.map(G1c.decode);
+        const B1 = pkey.B1.map(G1c.decode);
+        const B2 = pkey.B2.map(G2c.decode);
+        const C = pkey.C.map(G1c.decode);
+        const hExps = pkey.hExps.map(G1c.decode);
+        const vk_alfa_1 = G1c.decode(pkey.vk_alfa_1);
+        const vk_beta_1 = G1c.decode(pkey.vk_beta_1);
+        const vk_beta_2 = G2c.decode(pkey.vk_beta_2);
+        const vk_delta_1 = G1c.decode(pkey.vk_delta_1);
+        const vk_delta_2 = G2c.decode(pkey.vk_delta_2);
         // Actual algorithm
         // pi_a = WITNESS_A + delta1*r
         const pi_a_msm = await G1msm(A, witness);
@@ -506,8 +511,8 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
         const pi_b = pi_b_msm.add(vk_beta_2).add(vk_delta_2.multiplyUnsafe(s));
         const pib1n_msm = await G1msm(B1, witness);
         const pib1n = pib1n_msm.add(vk_beta_1).add(vk_delta_1.multiplyUnsafe(s));
-        const cOffset = prover.nPublic + 1;
-        const h = calculateH(prover, witness).map(Fr.create);
+        const cOffset = pkey.nPublic + 1;
+        const h = calculateH(pkey, witness).map(Fr.create);
         //WITNESS3 + pi_a * s + WITNESS4 * r
         const pi_c_msm = await G1msm(
           C.slice(cOffset).concat(hExps.slice(0, h.length)),
@@ -524,11 +529,12 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
             pi_b: G2c.encode(pi_b),
             pi_c: G1c.encode(pi_c),
           },
-          publicSignals: witness.slice(1, prover.nPublic + 1),
+          publicSignals: witness.slice(1, pkey.nPublic + 1),
         };
       },
-      verify(verifier: VkVerifier, proof: GrothProof, publicSignals: bigint[]): boolean {
-        const cpub = G1.msm(verifier.IC.map(G1c.decode), [1n, ...publicSignals]);
+      verifyProof(vkey: VkVerifier, proofWithSignals: ProofWithSignals): boolean {
+        const { proof, publicSignals } = proofWithSignals;
+        const cpub = G1.msm(vkey.IC.map(G1c.decode), [1n, ...publicSignals]);
         // old e(pi_a, pi_b) = alfa_beta * e(cpub, gamma_2) * e(pi_c, delta_2)
         // new: e(-pi_a, pi_b) * e(cpub, gamma_2) * e(pi_c, delta_2) * e(alfa_1, beta_2) = 1
         // Major difference: old version uses pre-computed alfa_beta,
@@ -536,9 +542,9 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
         // (Fp12 values different even if math is same).
         const newRes = curve.pairingBatch([
           { g1: G1c.decode(proof.pi_a).negate(), g2: G2c.decode(proof.pi_b) },
-          { g1: cpub, g2: G2c.decode(verifier.vk_gamma_2) },
-          { g1: G1c.decode(proof.pi_c), g2: G2c.decode(verifier.vk_delta_2) },
-          { g1: G1c.decode(verifier.vk_alfa_1), g2: G2c.decode(verifier.vk_beta_2) },
+          { g1: cpub, g2: G2c.decode(vkey.vk_gamma_2) },
+          { g1: G1c.decode(proof.pi_c), g2: G2c.decode(vkey.vk_delta_2) },
+          { g1: G1c.decode(vkey.vk_alfa_1), g2: G2c.decode(vkey.vk_beta_2) },
         ]);
         return Fp12.eql(newRes, Fp12.ONE);
       },

@@ -1,33 +1,32 @@
-# micro-zkproofs
+# micro-zk-proofs
 
-Create & verify zero-knowledge SNARK proofs in parallel, using noble cryptography.
+Create & verify zero-knowledge SNARK proofs in parallel, using [noble cryptography](https://paulmillr.com/noble/).
 
 - Supports Groth16. PLONK and others are planned
 - Optional, fast proof generation using web workers
-- Supports modern circom v2 and legacy circom v1 programs
+- Supports modern wasm and legacy js circom programs
 - Parse R1CS, WTNS
 
 ## Usage
 
-> npm install micro-zkproofs
+> npm install micro-zk-proofs
 
 ```js
-import * as zkp from 'micro-zkproofs';
+import * as zkp from 'micro-zk-proofs';
 // Basic usage. Check out examples below for details
-const proof = await zkp.bn254.groth.proof(provingKey, witness);
-const isValid = zkp.bn254.groth.verify(verificationKey, proof.proof, proof.publicSignals);
+const proof = await zkp.bn254.groth.createProof(provingKey, witness);
+const isValid = zkp.bn254.groth.verifyProof(verificationKey, proof);
 ```
 
 - [Prerequisites](#prerequisites)
   - [Circuit in circom language](#circuit-in-circom-language)
-  - [Compiler (circom2, rust)](#compiler-circom2-rust)
-  - [Old compiled js versions](#old-compiled-js-versions)
+  - [Compiler](#compiler)
 - [0. Compile](#0-compile)
 - [1. Setup](#1-setup)
 - [2.1: Generate witness](#21-generate-witness)
 - [2.2: Generate proof](#22-generate-proof)
 - [3: Validate proof](#3-validate-proof)
-- [Bonus: use WebWorkers to improve performance of prove generation:](#bonus-use-webworkers-to-improve-performance-of-prove-generation)
+- [Extra: Use workers for faster proof generation](#extra-enable-workers-for-faster-proof-generation)
 - [Full example (example/example.js)](#full-example-exampleexamplejs)
 - [Using existing circuit (example/old-circuit.js)](#using-an-existing-circuit-exampleold-circuitjs)
 
@@ -46,7 +45,9 @@ const isValid = zkp.bn254.groth.verify(verificationKey, proof.proof, proof.publi
   'sum' with publicly known 'b' without disclosing which a we know.
 - This is a toy circuit and it is not hard to identify which 'a' was used, in real example there would be some hash.
 
-#### Compiler (circom2, rust)
+#### Compiler
+
+Circom v2 in rust, compiling circuits into wasm:
 
 ```sh
 git clone https://github.com/iden3/circom
@@ -55,20 +56,33 @@ git checkout v2.2.2
 cargo build --release
 ```
 
-#### Compiler (circom1, js)
+Circom v1 in js, compiling circuits into json/js:
+
+```sh
+git clone https://github.com/iden3/circom_old
+cd circom_old
+git checkout v0.0.35
+npm install
+```
 
 Last version of sum.json: [sum_last.json from snarkjs v0.2.0](https://raw.githubusercontent.com/iden3/snarkjs/refs/tags/v0.2.0/test/circuit/sum.json)
 
 ### 0. Compile
 
-- this is outside of scope of our library and depends on circuit language
-  - we have some tools for circom, but there is no common serialization: https://github.com/orgs/arkworks-rs/discussions/8
-  - however, groth16 proofs are generic, you just need to provide same information
-- in these examples we will use circom, but library should interoperate with different languages easily.
-- we will also cover usage of circom v2 compiler (rust) and old circom v1 compiler (js)
-- NOTE: some old circuits won't compile with new compiler and also output may differ between old and new compiler,
-  for this reason we have support of old circuits (circom_old, js version).
-- first, we need to write circuit in circom language:
+Circuit compilation is outside of scope of our library and depends on a circuit language.
+Groth16 proofs don't care about language. We use circom in examples below, but you can use anything.
+
+There is [no common serialization format](https://github.com/orgs/arkworks-rs/discussions/8) for circom,
+but this is not a big deal. There are three circom compilers:
+
+- WASM circom v2 v2.2.2 [(github)](https://github.com/iden3/circom/releases/tag/v2.2.2) - modern version
+- WASM circom v1 v0.5.46 [(github)](https://github.com/iden3/circom_old/releases/tag/v0.5.46) - legacy rewrite of v0.0.35
+- JS circom v1 v0.0.35 [(github)](https://github.com/iden3/circom_old/releases/tag/v0.0.35) - original JS version
+
+We support all versions for backwards-compatibility reasons:
+v2 programs are different from circom v1, old circuits won't always compile with new compiler, and their output may differ between each other.
+
+- First, we need to write circuit in circom language:
   - we will use test circuit for that:
     - [aliascheck.circom](https://raw.githubusercontent.com/iden3/circomlib/refs/heads/35e54ea21da3e8762557234298dbb553c175ea8d/test/circuits/aliascheck.circom)
     - [binsum.circom](https://raw.githubusercontent.com/iden3/circomlib/refs/heads/35e54ea21da3e8762557234298dbb553c175ea8d/test/circuits/binsum.circom)
@@ -89,9 +103,11 @@ Last version of sum.json: [sum_last.json from snarkjs v0.2.0](https://raw.github
   - witness calculation program:
     - wasm/js for circom2
     - embedded in circuit.json for old compiler
-- NOTE: when using with existing project, proving/verify keys, witness calculation program and circuit info should be provided
-  by authors. Compiling same circuit with slightly different version of compiler will result in incompatible circuit which
-  will generate invalid proofs.
+
+> [!NOTE]
+> When using with existing project, proving/verify keys, witness calculation program and circuit info
+> should be provided by authors. Compiling same circuit with slightly different version of compiler
+> will result in incompatible circuit which will generate invalid proofs.
 
 #### Imports
 
@@ -99,9 +115,9 @@ Last version of sum.json: [sum_last.json from snarkjs v0.2.0](https://raw.github
 // NOTE: we use common js here, because generated wasm calculator is not esm (you need to build it into esm module)
 const fs = require('node:fs');
 const calc = require('./rust_output/sum_test_js/witness_calculator.js');
-const zkp = require('micro-zkproofs');
-const zkpWitness = require('micro-zkproofs/witness');
-const zkpMsm = require('micro-zkproofs/msm');
+const zkp = require('micro-zk-proofs');
+const zkpWitness = require('micro-zk-proofs/witness');
+const zkpMsm = require('micro-zk-proofs/msm');
 
 const { bn254 } = require('@noble/curves/bn254');
 const circuitSum = require('./sum_last.json');
@@ -160,27 +176,27 @@ const witnessJs = zkpWitness.generateWitness(circuitSum)(input);
 //deepStrictEqual(witness0, witnessJs); // -> will fail, because we have different constrains!
 ```
 
-### 2.2: Generate proof
+### 2.2: Create proof
 
 #### WASM
 
 ```js
-const proofWasm = await zkp.bn254.groth.proof(setupWasm.vk_proof, witness0);
+const proofWasm = await zkp.bn254.groth.createProof(setupWasm.pkey, witness0);
 ```
 
 #### JS
 
 ```js
-const proofJs = await zkp.bn254.groth.proof(setupJs.vk_proof, witnessJs);
+const proofJs = await zkp.bn254.groth.createProof(setupJs.pkey, witnessJs);
 ```
 
-### 3: Validate proof
+### 3: Verify proof
 
 #### WASM
 
 ```js
 deepStrictEqual(
-  zkp.bn254.groth.verify(setupWasm.vk_verifier, proofWasm.proof, proofWasm.publicSignals),
+  zkp.bn254.groth.verifyProof(setupWasm.vkey, proofWasm),
   true
 );
 ```
@@ -189,12 +205,12 @@ deepStrictEqual(
 
 ```js
 deepStrictEqual(
-  zkp.bn254.groth.verify(setupJs.vk_verifier, proofJs.proof, proofJs.publicSignals),
+  zkp.bn254.groth.verifyProof(setupJs.vkey, proofJs),
   true
 );
 ```
 
-### Bonus: use WebWorkers to improve performance of prove generation:
+### Extra: Use workers for faster proof generation
 
 ```js
 const msm = zkpMsm.initMSM();
@@ -203,9 +219,9 @@ const groth16 = zkp.buildSnark(bn254, {
   G2msm: msm.methods.bn254_msmG2,
 }).groth;
 // 2.2: generate proof
-const proofJs2 = await groth16.proof(setupJs.vk_proof, witnessJs);
+const proofJs2 = await groth16.createProof(setupJs.pkey, witnessJs);
 // 3: validate proof
-deepStrictEqual(groth16.verify(setupJs.vk_verifier, proofJs2.proof, proofJs2.publicSignals), true);
+deepStrictEqual(groth16.verifyProof(setupJs.vkey, proofJs2), true);
 msm.terminate();
 ```
 
@@ -215,9 +231,9 @@ msm.terminate();
 // NOTE: we use common js here, because generated wasm calculator is not esm (you need to build it into esm module)
 const fs = require('node:fs');
 const calc = require('./rust_output/sum_test_js/witness_calculator.js');
-const zkp = require('micro-zkproofs');
-const zkpWitness = require('micro-zkproofs/witness');
-const zkpMsm = require('micro-zkproofs/msm');
+const zkp = require('micro-zk-proofs');
+const zkpWitness = require('micro-zk-proofs/witness');
+const zkpMsm = require('micro-zk-proofs/msm');
 
 const { bn254 } = require('@noble/curves/bn254');
 const circuitSum = require('./sum_last.json');
@@ -241,10 +257,10 @@ const { deepStrictEqual } = require('assert');
   const witness1 = coders.WTNS.decode(wtns).sections[1].data; // Or using WTNS circom format
   deepStrictEqual(witness0, witness1);
   // 2.2: generate proof
-  const proofWasm = await zkp.bn254.groth.proof(setupWasm.vk_proof, witness0);
+  const proofWasm = await zkp.bn254.groth.createProof(setupWasm.pkey, witness0);
   // 3: validate proof
   deepStrictEqual(
-    zkp.bn254.groth.verify(setupWasm.vk_verifier, proofWasm.proof, proofWasm.publicSignals),
+    zkp.bn254.groth.verifyProof(setupWasm.vkey, proofWasm),
     true
   );
 
@@ -257,10 +273,10 @@ const { deepStrictEqual } = require('assert');
   const witnessJs = zkpWitness.generateWitness(circuitSum)(input);
   //deepStrictEqual(witness0, witnessJs); // -> will fail, because we have different constrains!
   // 2.2: generate proof
-  const proofJs = await zkp.bn254.groth.proof(setupJs.vk_proof, witnessJs);
+  const proofJs = await zkp.bn254.groth.createProof(setupJs.pkey, witnessJs);
   // 3: validate proof
   deepStrictEqual(
-    zkp.bn254.groth.verify(setupJs.vk_verifier, proofJs.proof, proofJs.publicSignals),
+    zkp.bn254.groth.verifyProof(setupJs.vkey, proofJs),
     true
   );
 
@@ -271,10 +287,10 @@ const { deepStrictEqual } = require('assert');
     G2msm: msm.methods.bn254_msmG2,
   }).groth;
   // 2.2: generate proof
-  const proofJs2 = await groth16.proof(setupJs.vk_proof, witnessJs);
+  const proofJs2 = await groth16.createProof(setupJs.pkey, witnessJs);
   // 3: validate proof
   deepStrictEqual(
-    groth16.verify(setupJs.vk_verifier, proofJs2.proof, proofJs2.publicSignals),
+    groth16.verifyProof(setupJs.vkey, proofJs2),
     true
   );
   msm.terminate();
@@ -291,29 +307,30 @@ const { deepStrictEqual } = require('assert');
 // NOTE: we use common js here, because generated wasm calculator is not esm (you need to build it into esm module)
 const { deepStrictEqual } = require('node:assert');
 const { readFileSync } = require('node:fs');
-const zkp = require('micro-zkproofs');
+const zkp = require('micro-zk-proofs');
 
 (async () => {
   const bigjson = (path) => zkp.stringBigints.decode(
     JSON.parse(fs.readFileSync('./wasmsnark/example/bn128/' + path, 'utf8'))
   );
   const provingKey = bigjson('proving_key.json');
-  const verificationKey = bigjson('verification_key.json');
+  const vkey = bigjson('verification_key.json');
   const witness = bigjson('witness.json');
   const oldProof = bigjson('proof.json');
   const oldProofGood = bigjson('proof_good.json');
   const oldProofGood0 = bigjson('proof_good0.json');
   const oldPublic = bigjson('public.json');
   // Generate proofs
-  const proofNew = await zkp.bn254.groth.proof(provingKey, witness);
+  const proofNew = await zkp.bn254.groth.createProof(provingKey, witness);
   deepStrictEqual(
-    zkp.bn254.groth.verify(verificationKey, proofNew.proof, proofNew.publicSignals),
+    zkp.bn254.groth.verifyProof(vkey, proofNew),
     true
   );
   // Verify proofs
-  deepStrictEqual(zkp.bn254.groth.verify(verificationKey, oldProof, oldPublic), true);
-  deepStrictEqual(zkp.bn254.groth.verify(verificationKey, oldProofGood, oldPublic), true);
-  deepStrictEqual(zkp.bn254.groth.verify(verificationKey, oldProofGood0, oldPublic), true);
+  const publicSignals = oldPublic;
+  deepStrictEqual(zkp.bn254.groth.verifyProof(vkey, { proof: oldProof, publicSignals }), true);
+  deepStrictEqual(zkp.bn254.groth.verifyProof(vkey, { proof: oldProofGood, publicSignals }), true);
+  deepStrictEqual(zkp.bn254.groth.verifyProof(vkey, { proof: oldProofGood0, publicSignals }), true);
 })();
 ```
 
