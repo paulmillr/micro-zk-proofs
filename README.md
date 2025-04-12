@@ -9,7 +9,9 @@ Create & verify zero-knowledge SNARK proofs in parallel, using [noble cryptograp
 
 ## Usage
 
-> npm install micro-zk-proofs
+`npm install micro-zk-proofs`
+
+`deno add jsr:@paulmillr/micro-zk-proofs`
 
 ```js
 import * as zkp from 'micro-zk-proofs';

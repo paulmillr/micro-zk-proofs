@@ -108,7 +108,7 @@ export function generateWitness(circJson: any) {
   const signalNames = (i: any) => signals[getSignalIdx(i)].names.join(', ');
   const patcher = monkeyPatchBigInt();
 
-  return function (input: any) {
+  return function (input: any): any {
     patcher.patch();
     const witness = new Array(circJson.nSignals);
     let currentComponent: string | undefined;
@@ -245,8 +245,72 @@ export function generateWitness(circJson: any) {
   };
 }
 
+export type R1CSType = P.CoderType<
+  P.StructInput<{
+    magic: undefined;
+    version: number;
+    sections: P.Values<{
+      header: {
+        TAG: 'header';
+        data: P.StructInput<{
+          prime: /*elided*/ any;
+          nWires: /*elided*/ any;
+          nPubOut: /*elided*/ any;
+          nPubIn: /*elided*/ any;
+          nPrvIn: /*elided*/ any;
+          nLables: /*elided*/ any;
+          mConstraints: /*elided*/ any;
+        }>;
+      };
+      constraint: {
+        TAG: 'constraint';
+        data: [Constraint, Constraint, Constraint][];
+      };
+      wire2label: {
+        TAG: 'wire2label';
+        data: bigint[];
+      };
+      customGatesList: {
+        TAG: 'customGatesList';
+        data: P.Bytes;
+      };
+      customGatesApplication: {
+        TAG: 'customGatesApplication';
+        data: P.Bytes;
+      };
+    }>[];
+  }>
+>;
+
+export type WTNSType = P.CoderType<
+  P.StructInput<{
+    magic: undefined;
+    version: number;
+    sections: P.Values<{
+      header: {
+        TAG: 'header';
+        data: P.StructInput<{
+          prime: /*elided*/ any;
+          size: /*elided*/ any;
+        }>;
+      };
+      witness: {
+        TAG: 'witness';
+        data: bigint[];
+      };
+    }>[];
+  }>
+>;
+
 /** Binary coders for Circom2 */
-export const getCoders = (field: IField<bigint>) => {
+export const getCoders = (
+  field: IField<bigint>
+): {
+  R1CS: R1CSType;
+  binWitness: P.CoderType<bigint[]>;
+  WTNS: WTNSType;
+  getCircuitInfo: (bytes: Uint8Array) => CircuitInfo;
+} => {
   // NOTE: we need to pass field here, even if bigints are variable size, they are fixed to field bytes!
   const fieldBytes = field.BYTES;
   const fieldCoder = P.bigint(fieldBytes, true, false);
