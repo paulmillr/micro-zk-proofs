@@ -2,7 +2,12 @@
   "name": "@paulmillr/micro-zk-proofs",
   "version": "0.1.0",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./mimcsponge.js": "./src/mimcsponge.ts",
+    "./msm-worker.js": "./src/msm-worker.ts",
+    "./msm.js": "./src/msm.ts",
+    "./pedersen.js": "./src/pedersen.ts",
+    "./witness.js": "./src/witness.ts"
   },
   "imports": {
     "@noble/curves": "jsr:@noble/curves@1.8.1",

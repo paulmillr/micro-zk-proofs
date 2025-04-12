@@ -7,7 +7,7 @@ import { bytesToNumberBE } from '@noble/curves/abstract/utils';
 import type { ProjConstructor, ProjPointType } from '@noble/curves/abstract/weierstrass';
 import { randomBytes } from '@noble/hashes/utils';
 import type { MSMInput } from './msm-worker.ts';
-import { modifyArgs } from './msm.js';
+import { modifyArgs } from './msm.ts';
 
 // It is hard to make groth16 async / fast, because MSM perf is
 // non-linear (2048 => 1024 points is not 2x faster).

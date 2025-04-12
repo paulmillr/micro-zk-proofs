@@ -1,5 +1,11 @@
 # zk-proofs examples
 
+```sh
+npm run all
+```
+
+## Compilers
+
 There are three circom compilers:
 
 - WASM circom v2 v2.2.2 [(github)](https://github.com/iden3/circom/releases/tag/v2.2.2) - modern version
@@ -8,21 +14,10 @@ There are three circom compilers:
 
 We support all versions for backwards-compatibility reasons.
 
-To run:
+## Circuits
+
+Circuits were copied from circomlib. Check out its source code of init-circuits:
 
 ```sh
-npm run all
+sh init-circuits.sh
 ```
-
-## Sources
-
-Circuits were copied from circomlib: `sh init-circuits.sh`.
-Check out its source code.
-
-
-File `js/sum-circuit.json` taken from [snarkjs v0.2.0](https://raw.githubusercontent.com/iden3/snarkjs/refs/tags/v0.2.0/test/circuit/sum.json):
-
-```sh
-curl https://raw.githubusercontent.com/iden3/snarkjs/refs/tags/v0.2.0/test/circuit/sum.json > 'sum-circuit.json'
-```
-

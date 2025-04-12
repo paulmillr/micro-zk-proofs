@@ -65,7 +65,7 @@ Witness generation:
 > different version of compiler will result in incompatible circuit which will generate
 > invalid proofs.
 
-> [!WARN]
+> [!WARNING]
 > `.setup` method is for tests only, in real production setup you need to do multi-party ceremony to avoid leaking of toxic scalars.
 
 ### Create / verify proof

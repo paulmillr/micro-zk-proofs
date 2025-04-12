@@ -6,6 +6,13 @@
   "main": "./index.js",
   "module": "./index.js",
   "types": "./index.d.ts",
+  "files": [
+    "*.js",
+    "*.js.map",
+    "*.d.ts",
+    "*.d.ts.map",
+    "src"
+  ],
   "dependencies": {
     "@noble/curves": "^1.8.1",
     "@noble/hashes": "^1.7.1",
