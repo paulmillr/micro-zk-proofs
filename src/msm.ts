@@ -29,7 +29,7 @@ export function modifyArgs<T>(
   field: IField<bigint>,
   point: ProjConstructor<T>,
   fn: (input: MSMInput<T>[]) => Promise<ProjPointType<T>>
-) {
+): (points: ProjPointType<T>[], scalars: bigint[]) => Promise<ProjPointType<T>> {
   return async (points: ProjPointType<T>[], scalars: bigint[]): Promise<ProjPointType<T>> => {
     if (points.length !== scalars.length) throw new Error('points.length !== scalars.length');
     const input: MSMInput<T>[] = [];

@@ -10,7 +10,7 @@
 import { invert, pow, type IField } from '@noble/curves/abstract/modular';
 import { bn254 as nobleBn254 } from '@noble/curves/bn254';
 import * as P from 'micro-packed';
-import { type CircuitInfo, type Constraint } from './index.js';
+import { type CircuitInfo, type Constraint } from './index.ts';
 
 function monkeyPatchBigInt() {
   const methods = {
@@ -70,7 +70,7 @@ const select = (a: any, selectors: string[]): any => {
   return a;
 };
 type Scope = Record<string, any>;
-export function generateWitness(circJson: any) {
+export function generateWitness(circJson: any): (input: any) => any {
   const P = nobleBn254.fields.Fr.ORDER;
   const MASK = nobleBn254.fields.Fr.MASK;
 

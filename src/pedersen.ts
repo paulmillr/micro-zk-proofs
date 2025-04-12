@@ -29,7 +29,7 @@ type EdwardsPoint = typeof babyjubjub.ExtendedPoint.BASE;
 // Seems like twistedEdwards fromBytes/toBytes, but with 'x > Fr.ORDER >> 1n' instead of oddity?
 // NOTE: we need to be as close as possible to original, otherwise hashes will change!
 export const Point = {
-  encode(p: any): Uint8Array {
+  encode: (p: any): Uint8Array => {
     const { x, y } = p.toAffine();
     const bytes = numberToBytesLE(y, 32);
     // Check highest bit instead of lowest in other twisted edwards
@@ -40,7 +40,7 @@ export const Point = {
   // formula and sqrt implementation. Other implementations may return different root first.
   // However it uses exactly same tonneli shanks as @noble/curves, but selects lower root
   // This is very fragile, but probably since used for hashes only
-  decode(bytes: Uint8Array): ExtPointType {
+  decode: (bytes: Uint8Array): ExtPointType => {
     const sign = !!(bytes[31] & 0x80);
     bytes[31] &= 0x7f; // clean sign bit
     const y = bytesToNumberLE(bytes);

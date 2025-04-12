@@ -57,12 +57,12 @@ export type StringToBigint<T> =
   T extends object ? { [K in keyof T]: StringToBigint<T[K]> } :
   T;
 export const stringBigints = {
-  encode<F>(o: F): BigintToString<F> {
+  encode: <F>(o: F): BigintToString<F> => {
     return deepConvert(o, (o) =>
       typeof o === 'bigint' ? o.toString(10) : undefined
     ) as BigintToString<F>;
   },
-  decode<T>(o: T): StringToBigint<T> {
+  decode: <T>(o: T): StringToBigint<T> => {
     return deepConvert(o, (o) =>
       typeof o == 'string' && /^[0-9]+$/.test(o) ? BigInt(o) : undefined
     ) as StringToBigint<T>;
