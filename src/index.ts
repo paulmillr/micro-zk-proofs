@@ -549,6 +549,14 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
   };
 }
 
+/**
+ * ZK Snarks over bn254 (aka bn128) curve.
+ * @example
+ * ```js
+ * const proof = await zkp.bn254.groth.createProof(provingKey, witness);
+ * const isValid = zkp.bn254.groth.verifyProof(verificationKey, proof);
+ * ```
+ */
 export const bn254: SnarkConstructorOutput = buildSnark(nobleBn254, {});
 // NOTE: this is unsafe and may not work (untested for now)
 //export const bls12_381 = buildSnark(nobleBls12, {});
