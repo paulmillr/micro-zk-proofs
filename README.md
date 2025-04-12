@@ -87,7 +87,6 @@ We will use a test circuit.
 
 ```sh
 dir='circom-wasm'
-if [ -d "$dir" ]; then exit 0; fi
 git clone https://github.com/iden3/circom $dir
 cd $dir
 git checkout v2.2.2
@@ -147,7 +146,6 @@ console.log('# wasm circom v2');
 
 ```sh
 dir='wasmsnark'
-if [ -d "$dir" ]; then exit 0; fi
 git clone https://github.com/iden3/wasmsnark.git $dir
 cd $dir
 git checkout v0.0.12
@@ -200,7 +198,6 @@ console.log('# wasm circom v1');
 
 ```sh
 dir='circom-js'
-if [ -d "$dir" ]; then exit 0; fi
 git clone https://github.com/iden3/circom_old $dir
 cd $dir
 git checkout v0.0.35
