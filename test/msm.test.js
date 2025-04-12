@@ -5,7 +5,7 @@ import { deepStrictEqual } from 'node:assert';
 import * as zkp from '../index.js';
 import * as msm from '../msm.js';
 import { generateWitness } from '../witness.js';
-import circuitSum from './vectors/circuit_sum.json' with { type: 'json' };
+import circuitSum from './vectors/sum-circuit.json' with { type: 'json' };
 
 const prg = (seed) => {
   const p = keccakprg().feed(seed);
