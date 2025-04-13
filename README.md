@@ -196,6 +196,10 @@ console.log('# wasm circom v1');
 
 #### JS v1
 
+circom JS v1 legacy programs produce code which is `eval`-ed using `new Function`.
+We have to monkey-patch BigInt - otherwise the code won't run.
+No patching is being done for WASM programs.
+
 ```sh
 dir='circom-js'
 git clone https://github.com/iden3/circom_old $dir

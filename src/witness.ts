@@ -1,9 +1,9 @@
 /**
+ * The code is only used if you plan to run **legacy circom-js programs**. It is unused in WASM.
  * Minimal witness program executor for circom programs, based on websnark/wasmsnark/snarkjs.
  * Unsafe: it uses eval, better to be used inside worker threads.
  * Depends on **monkey-patched BigInt** prototypes due to how circom programs are serialized.
  * We only patch prototypes before execution. After finishing, patches are reverted.
- * This way, no other code can interfere with it.
  * @module
  */
 
