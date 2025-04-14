@@ -89,21 +89,9 @@ function pointCoder<T, F>(
 }
 
 export type Constraint = Record<number, bigint>;
-export type CircuitInfo = {
-  nVars: number;
-  nPubInputs: number;
-  nOutputs: number;
-  constraints: [Constraint, Constraint, Constraint][]; // [A, B, C]
-};
 export type G1Point = [bigint, bigint, bigint];
 export type G2Point = [[bigint, bigint], [bigint, bigint], [bigint, bigint]];
-export interface PointsWithCoders {
-  G1: ProjConstructor<bigint>;
-  G2: ProjConstructor<Fp2>;
-  G1c: Coder<ProjPointType<bigint>, G1Point>;
-  G2c: Coder<ProjPointType<Fp2>, G2Point>;
-}
-export type ProvingKey = {
+export interface ProvingKey {
   protocol?: 'groth';
   nVars: number;
   nPublic: number;
@@ -128,7 +116,7 @@ export type ProvingKey = {
   hExps: G1Point[];
 };
 
-export type VerificationKey = {
+export interface VerificationKey {
   protocol?: 'groth';
   nPublic: number;
   IC: G1Point[];
@@ -139,12 +127,33 @@ export type VerificationKey = {
   vk_delta_2: G2Point;
 };
 
-export type GrothProof = {
+export type Witness = bigint[];
+
+export interface GrothProof {
   protocol: 'groth';
   pi_a: G1Point;
   pi_b: G2Point;
   pi_c: G1Point;
 };
+export interface ProofWithSignals {
+  proof: GrothProof;
+  publicSignals: Witness;
+}
+
+export type CircuitInfo = {
+  nVars: number;
+  nPubInputs: number;
+  nOutputs: number;
+  constraints: [Constraint, Constraint, Constraint][]; // [A, B, C]
+};
+
+export interface ToxicWaste {
+  t: bigint;
+  kalfa: bigint;
+  kbeta: bigint;
+  kgamma: bigint;
+  kdelta: bigint;
+}
 
 /**
  * nqr: Override NonQuadratic Residue
@@ -157,17 +166,11 @@ export type GrothOpts = {
   G2msm?: (input: MSMInput<Fp2>[]) => Promise<ProjPointType<Fp2>>;
 };
 
-export interface ToxicWaste {
-  t: bigint;
-  kalfa: bigint;
-  kbeta: bigint;
-  kgamma: bigint;
-  kdelta: bigint;
-}
-
-export interface ProofWithSignals {
-  proof: GrothProof;
-  publicSignals: bigint[];
+export interface PointsWithCoders {
+  G1: ProjConstructor<bigint>;
+  G2: ProjConstructor<Fp2>;
+  G1c: Coder<ProjPointType<bigint>, G1Point>;
+  G2c: Coder<ProjPointType<Fp2>, G2Point>;
 }
 
 export interface SnarkConstructorOutput {
@@ -181,7 +184,7 @@ export interface SnarkConstructorOutput {
       vkey: VerificationKey;
       toxic: ToxicWaste | undefined;
     };
-    createProof(pkey: ProvingKey, witness: bigint[], rnd?: RandFn): Promise<ProofWithSignals>;
+    createProof(pkey: ProvingKey, witness: Witness, rnd?: RandFn): Promise<ProofWithSignals>;
     verifyProof(vkey: VerificationKey, proofWithSignals: ProofWithSignals): boolean;
   };
 }
@@ -344,7 +347,7 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
     },
   };
 
-  function calculateH(proof: ProvingKey, witness: bigint[]) {
+  function calculateH(proof: ProvingKey, witness: Witness) {
     const m = proof.domainSize;
     const { pA, pB, pC } = poly.sumABC(m, witness, proof.polsA, proof.polsB, proof.polsC);
     // FFT only needed to optimize multiplication O(n²) to O(n log n)
@@ -482,7 +485,7 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
       },
       async createProof(
         pkey: ProvingKey,
-        witness: bigint[],
+        witness: Witness,
         rnd: RandFn = randomBytes
       ): Promise<ProofWithSignals> {
         witness = witness.map(Fr.create);

@@ -13,10 +13,61 @@ Create & verify zero-knowledge SNARK proofs in parallel, using [noble cryptograp
 
 `deno add jsr:@paulmillr/micro-zk-proofs`
 
-```js
+```ts
 import * as zkp from 'micro-zk-proofs';
 const proof = await zkp.bn254.groth.createProof(provingKey, witness);
 const isValid = zkp.bn254.groth.verifyProof(verificationKey, proof);
+
+// Typed as following:
+type Constraint = Record<number, bigint>;
+type G1Point = [bigint, bigint, bigint];
+type G2Point = [[bigint, bigint], [bigint, bigint], [bigint, bigint]];
+type ProvingKey = {
+  protocol?: 'groth';
+  nVars: number;
+  nPublic: number;
+  domainBits: number;
+  domainSize: number;
+  // Polynominals
+  polsA: Constraint[];
+  polsB: Constraint[];
+  polsC: Constraint[];
+  //
+  A: G1Point[];
+  B1: G1Point[];
+  B2: G2Point[];
+  C: G1Point[];
+  //
+  vk_alfa_1: G1Point;
+  vk_beta_1: G1Point;
+  vk_delta_1: G1Point;
+  vk_beta_2: G2Point;
+  vk_delta_2: G2Point;
+  //
+  hExps: G1Point[];
+};
+
+type VerificationKey = {
+  protocol?: 'groth';
+  nPublic: number;
+  IC: G1Point[];
+  //
+  vk_alfa_1: G1Point;
+  vk_beta_2: G2Point;
+  vk_gamma_2: G2Point;
+  vk_delta_2: G2Point;
+};
+
+type GrothProof = {
+  protocol: 'groth';
+  pi_a: G1Point;
+  pi_b: G2Point;
+  pi_c: G1Point;
+};
+interface ProofWithSignals {
+  proof: GrothProof;
+  publicSignals: bigint[];
+}
 ```
 
 There are 4 steps:
