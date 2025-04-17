@@ -4,7 +4,7 @@ Create & verify zero-knowledge SNARK proofs in parallel, using [noble cryptograp
 
 - Supports Groth16. PLONK and others are planned
 - Optional, fast proof generation using web workers
-- Supports modern wasm and legacy js circom programs
+- Supports gnark, modern wasm and legacy js circom programs
 - Parse R1CS, WTNS
 
 ## Usage

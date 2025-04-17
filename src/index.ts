@@ -114,7 +114,7 @@ export interface ProvingKey {
   vk_delta_2: G2Point;
   //
   hExps: G1Point[];
-};
+}
 
 export interface VerificationKey {
   protocol?: 'groth';
@@ -125,7 +125,7 @@ export interface VerificationKey {
   vk_beta_2: G2Point;
   vk_gamma_2: G2Point;
   vk_delta_2: G2Point;
-};
+}
 
 export type Witness = bigint[];
 
@@ -134,10 +134,11 @@ export interface GrothProof {
   pi_a: G1Point;
   pi_b: G2Point;
   pi_c: G1Point;
-};
+}
 export interface ProofWithSignals {
   proof: GrothProof;
   publicSignals: Witness;
+  commitments?: G1Point[];
 }
 
 export type CircuitInfo = {
@@ -533,8 +534,13 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
         };
       },
       verifyProof(vkey: VerificationKey, proofWithSignals: ProofWithSignals): boolean {
-        const { proof, publicSignals } = proofWithSignals;
-        const cpub = G1.msm(vkey.IC.map(G1c.decode), [1n, ...publicSignals]);
+        const { proof, publicSignals, commitments } = proofWithSignals;
+        let cpub = G1.msm(vkey.IC.map(G1c.decode), [1n, ...publicSignals]);
+        if (commitments) {
+          commitments.forEach((cm) => {
+            cpub = cpub.add(G1c.decode(cm));
+          });
+        }
         // old e(pi_a, pi_b) = alfa_beta * e(cpub, gamma_2) * e(pi_c, delta_2)
         // new: e(-pi_a, pi_b) * e(cpub, gamma_2) * e(pi_c, delta_2) * e(alfa_1, beta_2) = 1
         // Major difference: old version uses pre-computed alfa_beta,
