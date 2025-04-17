@@ -1,6 +1,6 @@
 {
   "name": "micro-zk-proofs",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Create & verify zero-knowledge SNARK proofs in parallel, using noble cryptography",
   "type": "module",
   "main": "./index.js",
