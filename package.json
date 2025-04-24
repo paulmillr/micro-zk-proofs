@@ -42,6 +42,7 @@
     "stark",
     "zk-proof",
     "proof",
+    "bn254",
     "zero-knowledge",
     "nizk"
   ],

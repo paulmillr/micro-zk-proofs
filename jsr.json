@@ -1,6 +1,6 @@
 {
   "name": "@paulmillr/micro-zk-proofs",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "exports": {
     ".": "./src/index.ts",
     "./mimcsponge.js": "./src/mimcsponge.ts",
