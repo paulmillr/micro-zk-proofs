@@ -8,6 +8,7 @@ import type { ProjConstructor, ProjPointType } from '@noble/curves/abstract/weie
 import { randomBytes } from '@noble/hashes/utils';
 import type { MSMInput } from './msm-worker.ts';
 import { modifyArgs } from './msm.ts';
+import { FFT, rootsOfUnity, poly as polyCurves } from '@noble/curves/abstract/fft';
 
 // It is hard to make groth16 async / fast, because MSM perf is
 // non-linear (2048 => 1024 points is not 2x faster).
@@ -212,145 +213,64 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
   const Frandom = (rnd: RandFn = randomBytes) => {
     return bytesToNumberBE(rnd(Fr.BYTES));
   };
-  // Factor Fr.ORDER-1 as oddFactor * 2^powerOfTwo
-  let oddFactor = Fr.ORDER - BigInt(1);
-  let powerOfTwo = 0;
-  for (; (oddFactor & BigInt(1)) !== BigInt(1); powerOfTwo++, oddFactor >>= 1n);
-  // Find non quadratic residue
-  let NQR;
-  if (opts.nqr) NQR = BigInt(opts.nqr);
-  else for (NQR = 2n; Fr.eql(Fr.pow(NQR, Fr.ORDER >> 1n), Fr.ONE); NQR++);
-  // Primitive roots of unity
-  const rootsOfUnity = [Fr.pow(NQR, oddFactor)];
-  for (let i = 0; i < powerOfTwo; i++) rootsOfUnity.push(Fr.sqr(rootsOfUnity[i]));
-  rootsOfUnity.reverse();
-  // Compute all roots of unity for powers up to maxPower
-  const rootsCache: bigint[][] = [];
-  const precomputeRoots = (maxPower: number) => {
-    for (let power = maxPower; power >= 0; power--) {
-      if (rootsCache[power]) continue; // Skip if we've already computed roots for this power
-      const rootsAtPower: bigint[] = (rootsCache[power] = []);
-      for (let j = 0, cur = Fr.ONE; j < 1 << power; j++, cur = Fr.mul(cur, rootsOfUnity[power]))
-        rootsAtPower.push(cur);
-    }
-  };
-
+  const roots = rootsOfUnity(Fr, opts.nqr ? BigInt(opts.nqr) : undefined);
+  const fftFr = FFT(roots, Fr);
+  const polyFr = polyCurves(Fr, roots, undefined, fftFr);
+  // TODO: cleanup more later
   const poly = {
     reduce(p: bigint[]) {
       while (p.length > 0 && Fr.is0(p[p.length - 1])) p.pop();
       return p;
     },
     sub(a: bigint[], b: bigint[]) {
-      const res = [];
-      for (let i = 0; i < Math.max(a.length, b.length); i++)
-        res.push(Fr.sub(a[i] || Fr.ZERO, b[i] || Fr.ZERO));
-      return poly.reduce(res);
+      const len = Math.max(a.length, b.length);
+      return poly.reduce(polyFr.sub(polyFr.extend(a, len), polyFr.extend(b, len)));
     },
-    // Iterative Cooley-Tukey FFT
     fft(p: bigint[], bits: number): bigint[] {
       const n = 1 << bits;
       while (p.length < n) p.push(Fr.ZERO);
-      const out = new Array<bigint>(n);
-      // Bit-reversal permutation: reorder input array into 'out'
-      for (let i = 0; i < n; i++) {
-        let rev = 0;
-        for (let j = 0; j < bits; j++) rev = (rev << 1) | ((i >> j) & 1);
-        out[rev] = p[i];
-      }
-      // For each stage s (sub-FFT length m = 2^s)
-      for (let s = 1; s <= bits; s++) {
-        const m = 1 << s;
-        const m2 = m >> 1;
-        // Loop over each subarray of length m
-        for (let k = 0; k < n; k += m) {
-          // Loop over each butterfly within the subarray
-          for (let j = 0; j < m2; j++) {
-            // Multiply the lower half by the appropriate twiddle factor.
-            const t = Fr.mul(rootsCache[s][j], out[k + j + m2]);
-            const u = out[k + j];
-            // Combine to form the butterfly outputs.
-            out[k + j] = Fr.add(u, t);
-            out[k + j + m2] = Fr.sub(u, t);
-          }
-        }
-      }
-      return out;
+      return fftFr.direct(p);
     },
-    // Inverse FFT.
     ifft(p: bigint[]) {
       if (p.length <= 1) return p;
-      const bits = log2(p.length - 1) + 1;
-      precomputeRoots(bits);
-      const invm = Fr.inv(Fr.create(BigInt(1 << bits)));
-      const res = poly.fft(p, bits);
-      for (let i = 0; i < res.length; i++) res[i] = Fr.mul(res[i], invm);
-      return [res[0]].concat(res.slice(1).reverse());
+      return fftFr.inverse(p);
     },
     // Polynomial multiplication via FFT.
     mul(a: bigint[], b: bigint[]) {
       if (a.length !== b.length || a.length < 2) throw new Error('wrong polynominal length');
-      // We compute bits = log2(longestN - 1) + 2 to ensure enough room for convolution,
-      // since the product of two degree-(n-1) polynomials can have degree up to 2n-2.
-      const bits = log2(Math.max(a.length, b.length) - 1) + 2;
-      precomputeRoots(bits);
-      const a2 = poly.fft(a, bits);
-      const b2 = poly.fft(b, bits);
-      for (let i = 0; i < a2.length; i++) a2[i] = Fr.mul(a2[i], b2[i]);
-      return poly.reduce(poly.ifft(a2));
+      return poly.reduce(polyFr.convolve(a, b));
     },
-    // Evaluate the Lagrange basis polynomials at a point t over the FFT domain of size m = 2^bits.
-    // If t is one of the m-th roots of unity, returns the Kronecker delta vector.
-    // Otherwise, computes L_i(t) = ((t^m - 1)/m) * (ω_i/(t - ω_i)),
-    // where ω_i = rootsCache[bits][i] (the i-th m-th root of unity).
     evaluateLagrangePolynomials(bits: number, t: bigint): bigint[] {
-      const m = 1 << bits;
-      const tm = Fr.pow(t, BigInt(m));
-      const u = new Array(m).fill(Fr.ZERO);
-      precomputeRoots(bits);
-      // Special case: if t is one of the roots of unity, the Lagrange basis is a Kronecker delta.
-      for (let i = 0; i < m; i++) {
-        if (Fr.eql(t, rootsCache[bits][i])) {
-          u.fill(Fr.ZERO);
-          u[i] = Fr.ONE;
-          return u;
-        }
-      }
-      const omega = rootsOfUnity[bits];
-      let l = Fr.mul(Fr.sub(tm, Fr.ONE), Fr.inv(BigInt(m)));
-      for (let i = 0; i < m; i++) {
-        u[i] = Fr.mul(l, Fr.inv(Fr.sub(t, rootsCache[bits][i])));
-        l = Fr.mul(l, omega);
-      }
-      return u;
-    },
-    sumABC(
-      size: number,
-      weights: bigint[],
-      A: Constraint[],
-      B: Constraint[],
-      C: Constraint[],
-      transpose = false
-    ) {
-      function build(constraints: Constraint[]) {
-        const res = new Array(size).fill(Fr.ZERO);
-        for (let s = 0; s < weights.length; s++) {
-          for (let c in constraints[s]) {
-            const idx = transpose ? s : +c;
-            res[idx] = Fr.add(
-              res[idx],
-              Fr.mul(transpose ? weights[+c] : weights[s], constraints[s][c])
-            );
-          }
-        }
-        return res;
-      }
-      return { pA: build(A), pB: build(B), pC: build(C) };
+      return polyFr.lagrange.basis(t, 2 ** bits);
     },
   };
+  function sumABC(
+    size: number,
+    weights: bigint[],
+    A: Constraint[],
+    B: Constraint[],
+    C: Constraint[],
+    transpose = false
+  ) {
+    function build(constraints: Constraint[]) {
+      const res = new Array(size).fill(Fr.ZERO);
+      for (let s = 0; s < weights.length; s++) {
+        for (let c in constraints[s]) {
+          const idx = transpose ? s : +c;
+          res[idx] = Fr.add(
+            res[idx],
+            Fr.mul(transpose ? weights[+c] : weights[s], constraints[s][c])
+          );
+        }
+      }
+      return res;
+    }
+    return { pA: build(A), pB: build(B), pC: build(C) };
+  }
 
   function calculateH(proof: ProvingKey, witness: Witness) {
     const m = proof.domainSize;
-    const { pA, pB, pC } = poly.sumABC(m, witness, proof.polsA, proof.polsB, proof.polsC);
+    const { pA, pB, pC } = sumABC(m, witness, proof.polsA, proof.polsB, proof.polsC);
     // FFT only needed to optimize multiplication O(n²) to O(n log n)
     // pA * pB - pC
     return poly.sub(poly.mul(poly.ifft(pA), poly.ifft(pB)), poly.ifft(pC)).slice(m);
@@ -403,7 +323,7 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
         // Evaluate
         const zt = Fr.sub(Fr.pow(toxic.t, BigInt(1 << domainBits)), Fr.ONE);
         const u = poly.evaluateLagrangePolynomials(domainBits, toxic.t);
-        const { pA, pB, pC } = poly.sumABC(circuit.nVars, u, polsA, polsB, polsC, true);
+        const { pA, pB, pC } = sumABC(circuit.nVars, u, polsA, polsB, polsC, true);
         // C
         const C = new Array(circuit.nVars);
         const invDelta = Fr.inv(toxic.kdelta);
