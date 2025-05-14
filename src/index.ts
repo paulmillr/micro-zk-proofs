@@ -2,13 +2,13 @@
 import { bn254 as nobleBn254 } from '@noble/curves/bn254';
 // import { bls12_381 as nobleBls12 } from '@noble/curves/bls12-381';
 import { type CurveFn as BLSCurveFn } from '@noble/curves/abstract/bls';
+import { FFT, poly as polyCurves, rootsOfUnity } from '@noble/curves/abstract/fft';
 import type { Fp2 } from '@noble/curves/abstract/tower';
 import { bytesToNumberBE } from '@noble/curves/abstract/utils';
 import type { ProjConstructor, ProjPointType } from '@noble/curves/abstract/weierstrass';
 import { randomBytes } from '@noble/hashes/utils';
 import type { MSMInput } from './msm-worker.ts';
 import { modifyArgs } from './msm.ts';
-import { FFT, rootsOfUnity, poly as polyCurves } from '@noble/curves/abstract/fft';
 
 // It is hard to make groth16 async / fast, because MSM perf is
 // non-linear (2048 => 1024 points is not 2x faster).
