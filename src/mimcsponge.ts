@@ -6,21 +6,23 @@
  * @module
  */
 
-import { bn254 } from '@noble/curves/bn254';
-import { keccak_256 } from '@noble/hashes/sha3';
+import { bn254 } from '@noble/curves/bn254.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { utf8ToBytes } from '@noble/hashes/utils.js';
 
 const Fr = bn254.fields.Fr;
 const SEED = 'mimcsponge';
 const NROUNDS = 220;
 
 export function getIV(seed: string = SEED): bigint {
-  return Fr.create(Fr.fromBytes(keccak_256(`${seed}_iv`)));
+  return Fr.create(Fr.fromBytes(keccak_256(utf8ToBytes(`${seed}_iv`)), true));
 }
 
 export function getConstants(seed: string = SEED, nRounds: number = NROUNDS): bigint[] {
   const cts = [BigInt(0)];
-  let c = keccak_256(seed);
-  for (let i = 0; i < nRounds - 2; i++) cts.push(Fr.create(Fr.fromBytes((c = keccak_256(c)))));
+  let c = keccak_256(utf8ToBytes(seed));
+  for (let i = 0; i < nRounds - 2; i++)
+    cts.push(Fr.create(Fr.fromBytes((c = keccak_256(c)), true)));
   cts.push(BigInt(0));
   return cts;
 }

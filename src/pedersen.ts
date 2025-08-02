@@ -6,21 +6,21 @@
  * Using scalar as field allows to be used inside of zk-circuits.
  * @module
  */
-import { type ExtPointType } from '@noble/curves/abstract/edwards';
-import { bytesToNumberLE, numberToBytesLE } from '@noble/curves/abstract/utils';
-import { babyjubjub } from '@noble/curves/misc';
-import { blake256 } from '@noble/hashes/blake1';
+import { type EdwardsPoint as ExtPointType } from '@noble/curves/abstract/edwards.js';
+import { asciiToBytes } from '@noble/curves/utils.js';
+import { babyjubjub } from '@noble/curves/misc.js';
+import { blake256 } from '@noble/hashes/blake1.js';
 
-const Fp = babyjubjub.CURVE.Fp;
+const Fp = babyjubjub.Point.Fp;
 
-type EdwardsPoint = typeof babyjubjub.ExtendedPoint.BASE;
+type EdwardsPoint = typeof babyjubjub.Point.BASE;
 
 // Seems like twistedEdwards fromBytes/toBytes, but with 'x > Fr.ORDER >> 1n' instead of oddity?
 // NOTE: we need to be as close as possible to original, otherwise hashes will change!
 export const Point = {
   encode: (p: any): Uint8Array => {
     const { x, y } = p.toAffine();
-    const bytes = numberToBytesLE(y, 32);
+    const bytes = Fp.toBytes(y);
     // Check highest bit instead of lowest in other twisted edwards
     if (x > Fp.ORDER >> 1n) bytes[31] |= 0x80;
     return bytes;
@@ -32,16 +32,18 @@ export const Point = {
   decode: (bytes: Uint8Array): ExtPointType => {
     const sign = !!(bytes[31] & 0x80);
     bytes[31] &= 0x7f; // clean sign bit
-    const y = bytesToNumberLE(bytes);
-    if (y >= Fp.ORDER) throw new Error('bigger than order');
+    const y = Fp.fromBytes(bytes);
     const y2 = Fp.sqr(y);
     let x = Fp.sqrt(
-      Fp.div(Fp.sub(Fp.ONE, y2), Fp.sub(babyjubjub.CURVE.a, Fp.mul(babyjubjub.CURVE.d, y2)))
+      Fp.div(
+        Fp.sub(Fp.ONE, y2),
+        Fp.sub(babyjubjub.Point.CURVE().a, Fp.mul(babyjubjub.Point.CURVE().d, y2))
+      )
     );
     // This forces lowest root (instead of isOdd in twisted edwards)
     if (x > Fp.ORDER >> 1n) x = Fp.neg(x);
     if (sign) x = Fp.neg(x);
-    return babyjubjub.ExtendedPoint.fromAffine({ x, y });
+    return babyjubjub.Point.fromAffine({ x, y });
   },
 };
 
@@ -52,7 +54,7 @@ function basePoint(idx: number) {
   let p = undefined;
   for (let i = 0; !p; i++) {
     const s = `PedersenGenerator_${('' + idx).padStart(32, '0')}_${('' + i).padStart(32, '0')}`;
-    const h = blake256(s);
+    const h = blake256(asciiToBytes(s));
     h[31] = h[31] & 0b1011_1111; // clear 255 bit
     try {
       p = Point.decode(h);
@@ -64,7 +66,7 @@ function basePoint(idx: number) {
   return p;
 }
 
-const SUBORDER = babyjubjub.CURVE.n >> 3n;
+const SUBORDER = babyjubjub.Point.Fn.ORDER >> 3n;
 function getScalars(msg: Uint8Array) {
   const res: bigint[] = [];
   // Very fragile wNAF (4-bit) like structure to avoid zero points
@@ -95,7 +97,7 @@ function getScalars(msg: Uint8Array) {
 export function pedersenHash(msg: Uint8Array): Uint8Array {
   const p = getScalars(msg).reduce(
     (acc, i, j) => acc.add(basePoint(j).multiply(i)),
-    babyjubjub.ExtendedPoint.ZERO
+    babyjubjub.Point.ZERO
   );
   return Point.encode(p);
 }

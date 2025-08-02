@@ -7,8 +7,9 @@
  * @module
  */
 
-import { invert, pow, type IField } from '@noble/curves/abstract/modular';
-import { bn254 as nobleBn254 } from '@noble/curves/bn254';
+import { invert, pow, type IField } from '@noble/curves/abstract/modular.js';
+import { bn254 as nobleBn254 } from '@noble/curves/bn254.js';
+import { bitMask } from '@noble/curves/utils.js';
 import * as P from 'micro-packed';
 import { type CircuitInfo, type Constraint } from './index.ts';
 
@@ -72,7 +73,7 @@ const select = (a: any, selectors: string[]): any => {
 type Scope = Record<string, any>;
 export function generateWitness(circJson: any): (input: any) => any {
   const P = nobleBn254.fields.Fr.ORDER;
-  const MASK = nobleBn254.fields.Fr.MASK;
+  const MASK = bitMask(nobleBn254.fields.Fr.BITS);
 
   const signals = circJson.signals;
   const components = circJson.components;
