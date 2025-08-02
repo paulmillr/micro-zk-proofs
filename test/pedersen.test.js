@@ -1,4 +1,4 @@
-import { hexToBytes } from '@noble/hashes/utils';
+import { hexToBytes } from '@noble/hashes/utils.js';
 import { describe, should } from 'micro-should';
 import { deepStrictEqual } from 'node:assert';
 import { pedersenHash } from '../pedersen.js';

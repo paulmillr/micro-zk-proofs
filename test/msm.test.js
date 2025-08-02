@@ -1,15 +1,17 @@
-import { bn254 } from '@noble/curves/bn254';
-import { keccakprg } from '@noble/hashes/sha3-addons';
+import { bn254 } from '@noble/curves/bn254.js';
+import { keccakprg } from '@noble/hashes/sha3-addons.js';
 import { describe, should } from 'micro-should';
 import { deepStrictEqual } from 'node:assert';
 import * as zkp from '../index.js';
 import * as msm from '../msm.js';
 import { generateWitness } from '../witness.js';
 import circuitSum from './vectors/sum-circuit.json' with { type: 'json' };
+import { utf8ToBytes } from '@noble/hashes/utils.js';
 
 const prg = (seed) => {
-  const p = keccakprg().feed(seed);
-  const randomBytes = (len) => p.fetch(len);
+  const p = keccakprg();
+  p.addEntropy(utf8ToBytes(seed));
+  const randomBytes = (len) => p.randomBytes(len);
   return randomBytes;
 };
 
@@ -17,10 +19,10 @@ describe('MSM', () => {
   should('Basic', async () => {
     const { methods, terminate } = msm.initMSM();
     const res = await methods.bn254_msmG1([
-      { scalar: 1n, point: bn254.G1.ProjectivePoint.BASE },
-      { scalar: 2n, point: bn254.G1.ProjectivePoint.BASE },
+      { scalar: 1n, point: bn254.G1.Point.BASE },
+      { scalar: 2n, point: bn254.G1.Point.BASE },
     ]);
-    deepStrictEqual(res.equals(bn254.G1.ProjectivePoint.BASE.multiply(3n)), true);
+    deepStrictEqual(res.equals(bn254.G1.Point.BASE.multiply(3n)), true);
     terminate();
   });
 
