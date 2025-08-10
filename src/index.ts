@@ -2,15 +2,12 @@
 import { bn254 as nobleBn254 } from '@noble/curves/bn254.js';
 // import { bls12_381 as nobleBls12 } from '@noble/curves/bls12-381';
 // import { type CurveFn as BLSCurveFn } from '@noble/curves/abstract/bls.js';
-import type { BLSCurvePair } from '@noble/curves/abstract/bls.js';
+import type { BlsCurvePair as BLSCurvePair } from '@noble/curves/abstract/bls.js';
 import { pippenger } from '@noble/curves/abstract/curve.js';
 import { FFT, poly as polyCurves, rootsOfUnity } from '@noble/curves/abstract/fft.js';
 import type { Fp2 } from '@noble/curves/abstract/tower.js';
+import type { WeierstrassPoint, WeierstrassPointCons } from '@noble/curves/abstract/weierstrass.js';
 import { bytesToNumberBE } from '@noble/curves/utils.js';
-import type {
-  WeierstrassPointCons as ProjConstructor,
-  WeierstrassPoint as ProjPointType,
-} from '@noble/curves/abstract/weierstrass.js';
 import { randomBytes } from '@noble/hashes/utils.js';
 import type { MSMInput } from './msm-worker.ts';
 import { modifyArgs } from './msm.ts';
@@ -76,9 +73,9 @@ export const stringBigints = {
 };
 
 function pointCoder<T, F>(
-  cons: ProjConstructor<T>,
+  cons: WeierstrassPointCons<T>,
   coder: Coder<T, F>
-): Coder<ProjPointType<T>, [F, F, F]> {
+): Coder<WeierstrassPoint<T>, [F, F, F]> {
   return {
     encode: (p): [F, F, F] => {
       const { X: px, Y: py, Z: pz } = cons.fromAffine(p.toAffine());
@@ -169,15 +166,15 @@ export interface ToxicWaste {
 export type GrothOpts = {
   nqr?: number | bigint; //
   unsafePreserveToxic?: boolean;
-  G1msm?: (input: MSMInput<bigint>[]) => Promise<ProjPointType<bigint>>;
-  G2msm?: (input: MSMInput<Fp2>[]) => Promise<ProjPointType<Fp2>>;
+  G1msm?: (input: MSMInput<bigint>[]) => Promise<WeierstrassPoint<bigint>>;
+  G2msm?: (input: MSMInput<Fp2>[]) => Promise<WeierstrassPoint<Fp2>>;
 };
 
 export interface PointsWithCoders {
-  G1: ProjConstructor<bigint>;
-  G2: ProjConstructor<Fp2>;
-  G1c: Coder<ProjPointType<bigint>, G1Point>;
-  G2c: Coder<ProjPointType<Fp2>, G2Point>;
+  G1: WeierstrassPointCons<bigint>;
+  G2: WeierstrassPointCons<Fp2>;
+  G1c: Coder<WeierstrassPoint<bigint>, G1Point>;
+  G2c: Coder<WeierstrassPoint<Fp2>, G2Point>;
 }
 
 export interface SnarkConstructorOutput {
