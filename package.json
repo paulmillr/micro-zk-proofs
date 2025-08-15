@@ -2,10 +2,6 @@
   "name": "micro-zk-proofs",
   "version": "0.1.3",
   "description": "Create & verify zero-knowledge SNARK proofs in parallel, using noble cryptography",
-  "type": "module",
-  "main": "./index.js",
-  "module": "./index.js",
-  "types": "./index.d.ts",
   "files": [
     "*.js",
     "*.js.map",
@@ -46,12 +42,15 @@
     "zero-knowledge",
     "nizk"
   ],
-  "sideEffects": false,
-  "author": "Paul Miller (https://paulmillr.com)",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/paulmillr/micro-zk-proofs.git"
   },
-  "funding": "https://paulmillr.com/funding/",
+  "type": "module",
+  "main": "index.js",
+  "module": "index.js",
+  "types": "index.d.ts",
+  "sideEffects": false,
+  "author": "Paul Miller (https://paulmillr.com)",
   "license": "MIT"
 }
