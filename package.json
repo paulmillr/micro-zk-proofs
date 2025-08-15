@@ -25,7 +25,6 @@
   "scripts": {
     "build": "tsc",
     "build:release": "npx --no @paulmillr/jsbt esbuild test/build",
-    "lint": "prettier --check src test",
     "format": "prettier --write src test",
     "test": "node test/index.js",
     "test:deno": "deno test/index.js"
