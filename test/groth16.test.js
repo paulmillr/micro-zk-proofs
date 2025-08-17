@@ -1,5 +1,5 @@
-import { bn254 } from '@noble/curves/bn254';
-import { keccakprg } from '@noble/hashes/sha3-addons';
+import { bn254 } from '@noble/curves/bn254.js';
+import { keccakprg } from '@noble/hashes/sha3-addons.js';
 import { describe, should } from 'micro-should';
 import { deepStrictEqual } from 'node:assert';
 import * as zkp from '../index.js';
@@ -8,10 +8,12 @@ import { generateWitness } from '../witness.js';
 import setupRandomTest from './vectors/setup_random.json' with { type: 'json' };
 import setupStaticTest from './vectors/setup_static.json' with { type: 'json' };
 import circuitSum from './vectors/sum-circuit.json' with { type: 'json' };
+import { utf8ToBytes } from '@noble/hashes/utils.js';
 
 const prg = (seed) => {
-  const p = keccakprg().feed(seed);
-  const randomBytes = (len) => p.fetch(len);
+  const p = keccakprg();
+  p.addEntropy(utf8ToBytes(seed));
+  const randomBytes = (len) => p.randomBytes(len);
   return randomBytes;
 };
 

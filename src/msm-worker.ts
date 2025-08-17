@@ -2,29 +2,33 @@
  * MSM parallel worker, using micro-wrkr.
  * @module
  */
-import type { Fp2 } from '@noble/curves/abstract/tower';
-import { type ProjConstructor, type ProjPointType } from '@noble/curves/abstract/weierstrass';
-import { bn254 } from '@noble/curves/bn254';
+import { pippenger } from '@noble/curves/abstract/curve.js';
+import type { Fp2 } from '@noble/curves/abstract/tower.js';
+import {
+  type WeierstrassPoint,
+  type WeierstrassPointCons,
+} from '@noble/curves/abstract/weierstrass.js';
+import { bn254 } from '@noble/curves/bn254.js';
 import { wrkr } from 'micro-wrkr';
 
-export type MSMInput<T> = { point: ProjPointType<T>; scalar: bigint };
+export type MSMInput<T> = { point: WeierstrassPoint<T>; scalar: bigint };
 export type bn254MSMInput = {
-  bn254_msmG1: (list: MSMInput<bigint>[]) => ProjPointType<bigint>;
-  bn254_msmG2: (list: MSMInput<Fp2>[]) => ProjPointType<Fp2>;
+  bn254_msmG1: (list: MSMInput<bigint>[]) => WeierstrassPoint<bigint>;
+  bn254_msmG2: (list: MSMInput<Fp2>[]) => WeierstrassPoint<Fp2>;
 };
 
-function buildMSM<T>(point: ProjConstructor<T>) {
-  return (list: MSMInput<T>[]): ProjPointType<T> => {
+function buildMSM<T>(point: WeierstrassPointCons<T>) {
+  return (list: MSMInput<T>[]): WeierstrassPoint<T> => {
     if (!list.length) return point.ZERO;
-    const points = list.map((i: any) => new point(i.point.px, i.point.py, i.point.pz));
+    const points = list.map((i: any) => new point(i.point.X, i.point.Y, i.point.Z));
     const scalars = list.map((i: any) => i.scalar);
-    return point.msm(points, scalars);
+    return pippenger(point, points, scalars);
   };
 }
 
 const handlers: bn254MSMInput = {
-  bn254_msmG1: buildMSM(bn254.G1.ProjectivePoint),
-  bn254_msmG2: buildMSM(bn254.G2.ProjectivePoint),
+  bn254_msmG1: buildMSM(bn254.G1.Point),
+  bn254_msmG2: buildMSM(bn254.G2.Point),
 };
 
 export type Handlers = bn254MSMInput;

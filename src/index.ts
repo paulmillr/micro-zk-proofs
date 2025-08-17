@@ -1,14 +1,16 @@
 /*! micro-zk-proofs - MIT License (c) 2025 Paul Miller (paulmillr.com) */
-import { bn254 as nobleBn254 } from '@noble/curves/bn254';
+import { bn254 as nobleBn254 } from '@noble/curves/bn254.js';
 // import { bls12_381 as nobleBls12 } from '@noble/curves/bls12-381';
-import { type CurveFn as BLSCurveFn } from '@noble/curves/abstract/bls';
-import type { Fp2 } from '@noble/curves/abstract/tower';
-import { bytesToNumberBE } from '@noble/curves/abstract/utils';
-import type { ProjConstructor, ProjPointType } from '@noble/curves/abstract/weierstrass';
-import { randomBytes } from '@noble/hashes/utils';
+// import { type CurveFn as BLSCurveFn } from '@noble/curves/abstract/bls.js';
+import type { BlsCurvePair as BLSCurvePair } from '@noble/curves/abstract/bls.js';
+import { pippenger } from '@noble/curves/abstract/curve.js';
+import { FFT, poly as polyCurves, rootsOfUnity } from '@noble/curves/abstract/fft.js';
+import type { Fp2 } from '@noble/curves/abstract/tower.js';
+import type { WeierstrassPoint, WeierstrassPointCons } from '@noble/curves/abstract/weierstrass.js';
+import { bytesToNumberBE } from '@noble/curves/utils.js';
+import { randomBytes } from '@noble/hashes/utils.js';
 import type { MSMInput } from './msm-worker.ts';
 import { modifyArgs } from './msm.ts';
-import { FFT, rootsOfUnity, poly as polyCurves } from '@noble/curves/abstract/fft';
 
 // It is hard to make groth16 async / fast, because MSM perf is
 // non-linear (2048 => 1024 points is not 2x faster).
@@ -71,12 +73,12 @@ export const stringBigints = {
 };
 
 function pointCoder<T, F>(
-  cons: ProjConstructor<T>,
+  cons: WeierstrassPointCons<T>,
   coder: Coder<T, F>
-): Coder<ProjPointType<T>, [F, F, F]> {
+): Coder<WeierstrassPoint<T>, [F, F, F]> {
   return {
     encode: (p): [F, F, F] => {
-      const { px, py, pz } = cons.fromAffine(p.toAffine());
+      const { X: px, Y: py, Z: pz } = cons.fromAffine(p.toAffine());
       return [px, py, pz].map(coder.encode) as [F, F, F];
     },
     decode: (p) => {
@@ -164,15 +166,15 @@ export interface ToxicWaste {
 export type GrothOpts = {
   nqr?: number | bigint; //
   unsafePreserveToxic?: boolean;
-  G1msm?: (input: MSMInput<bigint>[]) => Promise<ProjPointType<bigint>>;
-  G2msm?: (input: MSMInput<Fp2>[]) => Promise<ProjPointType<Fp2>>;
+  G1msm?: (input: MSMInput<bigint>[]) => Promise<WeierstrassPoint<bigint>>;
+  G2msm?: (input: MSMInput<Fp2>[]) => Promise<WeierstrassPoint<Fp2>>;
 };
 
 export interface PointsWithCoders {
-  G1: ProjConstructor<bigint>;
-  G2: ProjConstructor<Fp2>;
-  G1c: Coder<ProjPointType<bigint>, G1Point>;
-  G2c: Coder<ProjPointType<Fp2>, G2Point>;
+  G1: WeierstrassPointCons<bigint>;
+  G2: WeierstrassPointCons<Fp2>;
+  G1c: Coder<WeierstrassPoint<bigint>, G1Point>;
+  G2c: Coder<WeierstrassPoint<Fp2>, G2Point>;
 }
 
 export interface SnarkConstructorOutput {
@@ -191,10 +193,13 @@ export interface SnarkConstructorOutput {
   };
 }
 
-export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstructorOutput {
+export function buildSnark(curve: BLSCurvePair, opts: GrothOpts = {}): SnarkConstructorOutput {
   // Utils
-  const G1 = curve.G1.ProjectivePoint;
-  const G2 = curve.G2.ProjectivePoint;
+  const G1 = curve.G1.Point;
+  const G2 = curve.G2.Point;
+  type G1Point = typeof G1.BASE;
+  type G2Point = typeof G2.BASE;
+
   const { Fr, Fp, Fp2, Fp12 } = curve.fields;
   const Fpc: Coder<bigint, bigint> = {
     encode: (from) => from,
@@ -207,8 +212,12 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
   const G1c = pointCoder(G1, Fpc);
   const G2c = pointCoder(G2, Fp2c);
 
-  const G1msm = !opts.G1msm ? G1.msm : modifyArgs(Fr, G1, opts.G1msm);
-  const G2msm = !opts.G2msm ? G2.msm : modifyArgs(Fr, G2, opts.G2msm);
+  const G1msm = !opts.G1msm
+    ? (p: G1Point[], s: bigint[]) => pippenger(curve.G1.Point, p, s)
+    : modifyArgs(Fr, G1, opts.G1msm);
+  const G2msm = !opts.G2msm
+    ? (p: G2Point[], s: bigint[]) => pippenger(curve.G2.Point, p, s)
+    : modifyArgs(Fr, G2, opts.G2msm);
 
   const Frandom = (rnd: RandFn = randomBytes) => {
     return bytesToNumberBE(rnd(Fr.BYTES));
@@ -409,7 +418,7 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
         witness: Witness,
         rnd: RandFn = randomBytes
       ): Promise<ProofWithSignals> {
-        witness = witness.map(Fr.create);
+        witness = witness.map((i) => Fr.create(i));
         // Blinding salt for zero-knowledge
         const r = Fr.create(Frandom(rnd));
         const s = Fr.create(Frandom(rnd));
@@ -433,7 +442,7 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
         const pib1n_msm = await G1msm(B1, witness);
         const pib1n = pib1n_msm.add(vk_beta_1).add(vk_delta_1.multiplyUnsafe(s));
         const cOffset = pkey.nPublic + 1;
-        const h = calculateH(pkey, witness).map(Fr.create);
+        const h = calculateH(pkey, witness).map((i) => Fr.create(i));
         //WITNESS3 + pi_a * s + WITNESS4 * r
         const pi_c_msm = await G1msm(
           C.slice(cOffset).concat(hExps.slice(0, h.length)),
@@ -455,7 +464,7 @@ export function buildSnark(curve: BLSCurveFn, opts: GrothOpts = {}): SnarkConstr
       },
       verifyProof(vkey: VerificationKey, proofWithSignals: ProofWithSignals): boolean {
         const { proof, publicSignals, commitments } = proofWithSignals;
-        let cpub = G1.msm(vkey.IC.map(G1c.decode), [1n, ...publicSignals]);
+        let cpub = pippenger(G1, vkey.IC.map(G1c.decode), [1n, ...publicSignals]);
         if (commitments) {
           commitments.forEach((cm) => {
             cpub = cpub.add(G1c.decode(cm));

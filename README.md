@@ -3,7 +3,7 @@
 Create & verify zero-knowledge SNARK proofs in parallel, using [noble cryptography](https://paulmillr.com/noble/).
 
 - Supports Groth16. PLONK and others are planned
-- Optional, fast proof generation using web workers
+- [Fast](#speed), even faster using optional parallel generation
 - Supports gnark, modern wasm and legacy js circom programs
 - Parse R1CS, WTNS
 
@@ -309,6 +309,15 @@ const setupJs = groth.setup(sumCircuit);
   msm.terminate();
 })();
 ```
+
+## Speed
+
+Benchmarks measured on Apple M4:
+
+- Proof generation, no workers: 149ms
+- Proof verification, no workers: 24ms
+- Proof generation, with workers: 48ms
+- Proof verification, with workers: 24ms
 
 ## License
 

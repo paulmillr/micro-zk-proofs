@@ -1,12 +1,7 @@
 {
-  "extends": "@paulmillr/jsbt/tsconfig.esm.json",
+  "extends": "@paulmillr/jsbt/tsconfig.json",
   "compilerOptions": {
-    "baseUrl": ".",
-    "outDir": ".",
-    "lib": [
-      "es2020",
-      "dom"
-    ]
+    "outDir": "."
   },
   "include": [
     "src"

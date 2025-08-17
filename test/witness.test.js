@@ -1,6 +1,6 @@
-import { hexToBytes } from '@noble/curves/abstract/utils';
-import { bn254 } from '@noble/curves/bn254';
-import { keccakprg } from '@noble/hashes/sha3-addons';
+import { hexToBytes } from '@noble/curves/utils.js';
+import { bn254 } from '@noble/curves/bn254.js';
+import { keccakprg } from '@noble/hashes/sha3-addons.js';
 import { describe, should } from 'micro-should';
 import { deepStrictEqual } from 'node:assert';
 import { readFileSync } from 'node:fs';
