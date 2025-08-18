@@ -1,6 +1,6 @@
 import { bn254 } from '@noble/curves/bn254.js';
 import { keccakprg } from '@noble/hashes/sha3-addons.js';
-import { describe, should } from 'micro-should';
+import { describe, should } from '@paulmillr/jsbt/test.js';
 import { deepStrictEqual } from 'node:assert';
 import * as zkp from '../index.js';
 import { stringBigints } from '../index.js';
