@@ -10,7 +10,7 @@
     "src"
   ],
   "dependencies": {
-    "@noble/curves": "^2.0.0",
+    "@noble/curves": "file:noble-curves-2.0.1-pre.tgz",
     "@noble/hashes": "^2.0.0",
     "micro-packed": "^0.8.0",
     "micro-wrkr": "^0.1.0"
