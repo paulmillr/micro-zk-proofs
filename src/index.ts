@@ -1,12 +1,10 @@
 /*! micro-zk-proofs - MIT License (c) 2025 Paul Miller (paulmillr.com) */
-import { bn254 as nobleBn254 } from '@noble/curves/bn254.js';
-// import { bls12_381 as nobleBls12 } from '@noble/curves/bls12-381';
-// import { type CurveFn as BLSCurveFn } from '@noble/curves/abstract/bls.js';
 import type { BlsCurvePair as BLSCurvePair } from '@noble/curves/abstract/bls.js';
 import { pippenger } from '@noble/curves/abstract/curve.js';
 import { FFT, poly as polyCurves, rootsOfUnity } from '@noble/curves/abstract/fft.js';
 import type { Fp2 } from '@noble/curves/abstract/tower.js';
 import type { WeierstrassPoint, WeierstrassPointCons } from '@noble/curves/abstract/weierstrass.js';
+import { bn254 as nobleBn254 } from '@noble/curves/bn254.js';
 import { bytesToNumberBE } from '@noble/curves/utils.js';
 import { randomBytes } from '@noble/hashes/utils.js';
 import type { MSMInput } from './msm-worker.ts';
