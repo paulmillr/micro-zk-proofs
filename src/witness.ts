@@ -11,7 +11,15 @@ import { invert, pow, type IField } from '@noble/curves/abstract/modular.js';
 import { bn254 as nobleBn254 } from '@noble/curves/bn254.js';
 import { bitMask } from '@noble/curves/utils.js';
 import * as P from 'micro-packed';
-import { type CircuitInfo, type Constraint } from './index.ts';
+import {
+  type CircuitInfo,
+  type Constraint,
+  type G1Point,
+  type G2Point,
+  type ProvingKey,
+  type VerificationKey,
+} from './index.ts';
+import type { BlsCurvePair as BLSCurvePair } from '@noble/curves/abstract/bls.js';
 
 function monkeyPatchBigInt() {
   const methods = {
@@ -305,13 +313,16 @@ export type WTNSType = P.CoderType<
 
 /** Binary coders for Circom2 */
 export const getCoders = (
-  field: IField<bigint>
+  curve: BLSCurvePair
 ): {
   R1CS: R1CSType;
   binWitness: P.CoderType<bigint[]>;
   WTNS: WTNSType;
   getCircuitInfo: (bytes: Uint8Array) => CircuitInfo;
+  ZKeyRaw: P.CoderType<any>;
+  parseZKey: (bytes: Uint8Array) => { json: any; pkey: ProvingKey; vkey: VerificationKey };
 } => {
+  const field = curve.fields.Fr;
   // NOTE: we need to pass field here, even if bigints are variable size, they are fixed to field bytes!
   const fieldBytes = field.BYTES;
   const fieldCoder = P.bigint(fieldBytes, true, false);
@@ -363,6 +374,49 @@ export const getCoders = (
     version: P.U32LE,
     sections: P.array(P.U32LE, WTNSSection),
   });
+  const G1 = P.tuple([fieldCoder, fieldCoder]);
+  const G2 = P.tuple([fieldCoder, fieldCoder, fieldCoder, fieldCoder]);
+  const ZKeyHeader = P.map(P.U32LE, {
+    groth16: 1,
+  });
+  const ZKeyHeaderGroth = P.struct({
+    n8q: P.U32LE,
+    q: fieldCoder,
+    n8r: P.U32LE,
+    r: fieldCoder,
+    nVars: P.U32LE,
+    nPublic: P.U32LE,
+    domainSize: P.U32LE,
+    vk_alpha_1: G1,
+    vk_beta_1: G1,
+    vk_beta_2: G2,
+    vk_gamma_2: G2,
+    vk_delta_1: G1,
+    vk_delta_2: G2,
+  });
+  const ZKeyCoeff = P.struct({
+    matrix: P.U32LE,
+    constraint: P.U32LE,
+    signal: P.U32LE,
+    value: fieldCoder,
+  });
+  const ZKeySection = P.mappedTag(P.U32LE, {
+    header: [1, section(ZKeyHeader)],
+    headerGroth: [2, section(ZKeyHeaderGroth)],
+    IC: [3, section(P.array(null, G1))],
+    ccoefs: [4, section(P.array(P.U32LE, ZKeyCoeff))],
+    A: [5, section(P.array(null, G1))],
+    B1: [6, section(P.array(null, G1))],
+    B2: [7, section(P.array(null, G2))],
+    C: [8, section(P.array(null, G1))],
+    hExps: [9, section(P.array(null, G1))],
+    Contributions: [10, section(P.bytes(null))],
+  });
+  const ZKeyRaw = P.struct({
+    magic: P.magic(P.string(4), 'zkey'),
+    version: P.U32LE,
+    sections: P.array(P.U32LE, ZKeySection),
+  });
 
   const getCircuitInfo = (bytes: Uint8Array): CircuitInfo => {
     const data = R1CS.decode(bytes);
@@ -378,5 +432,116 @@ export const getCoders = (
       constraints: constraints.data,
     };
   };
-  return { R1CS, binWitness, WTNS, getCircuitInfo };
+  function parseZKey(zkey: Uint8Array) {
+    const { Fr, Fp } = curve.fields;
+    // Montgomery encoding of field elements
+    const fieldFromMont = (f: IField<bigint>, is1: boolean) => {
+      const Rr = f.pow(BigInt(2), BigInt(f.BYTES * 8));
+      const RRi = f.inv(Rr);
+      const RRi2 = f.mul(RRi, RRi);
+      return (x: bigint) => f.mul(x, is1 ? RRi : RRi2);
+    };
+    const is0 = (x: bigint) => x === BigInt(0);
+    const convFr2 = fieldFromMont(Fr, false);
+    const convFp = fieldFromMont(Fp, true);
+    const convG1 = ([x, y]: bigint[]): G1Point =>
+      is0(x) && is0(y) ? [BigInt(0), BigInt(1), BigInt(0)] : [convFp(x), convFp(y), BigInt(1)];
+
+    //     [ [ 0n, 0n ], [ 0n, 0n ], [ 1n, 0n ] ], ->     [ [ 0n, 0n ], [ 1n, 0n ], [ 0n, 0n ] ],
+    const convG2 = ([xc0, xc1, yc0, yc1]: bigint[]): G2Point =>
+      is0(xc0) && is0(xc1) && is0(yc0) && is0(yc1)
+        ? [
+            [BigInt(0), BigInt(0)],
+            [BigInt(1), BigInt(0)],
+            [BigInt(0), BigInt(0)],
+          ]
+        : [
+            [convFp(xc0), convFp(xc1)],
+            [convFp(yc0), convFp(yc1)],
+            [BigInt(1), BigInt(0)],
+          ];
+    const data = ZKeyRaw.decode(zkey);
+
+    function getByTag<T extends { TAG: string; data: unknown }, K extends T['TAG']>(
+      sections: T[],
+      tag: K
+    ): Extract<T, { TAG: K }>['data'] {
+      const v = sections.find((i): i is Extract<T, { TAG: K }> => i.TAG === tag);
+      if (!v) throw new Error('ZKey: cannot find ' + String(tag));
+      return v.data;
+    }
+    function collect<T extends { TAG: string; data: unknown }, K extends readonly T['TAG'][]>(
+      sections: T[],
+      ks: K
+    ): { [P in K[number]]: Extract<T, { TAG: P }>['data'] } {
+      const out = {} as any;
+      for (const k of ks) out[k] = getByTag<T, typeof k>(sections, k);
+      return out;
+    }
+    const res = collect(data.sections, [
+      'header',
+      'headerGroth',
+      'IC',
+      'ccoefs',
+      'A',
+      'B1',
+      'B2',
+      'C',
+      'hExps',
+    ] as const);
+    // Same format as verification key
+    const json = {
+      protocol: res.header,
+      ...res.headerGroth,
+      vk_alpha_1: convG1(res.headerGroth.vk_alpha_1),
+      vk_beta_1: convG1(res.headerGroth.vk_beta_1),
+      vk_delta_1: convG1(res.headerGroth.vk_delta_1),
+      vk_beta_2: convG2(res.headerGroth.vk_beta_2),
+      vk_delta_2: convG2(res.headerGroth.vk_delta_2),
+      vk_gamma_2: convG2(res.headerGroth.vk_gamma_2),
+      power: Math.log2(res.headerGroth.domainSize),
+      IC: res.IC.map(convG1),
+      ccoefs: res.ccoefs.map((i) => ({ ...i, value: convFr2(i.value) })),
+      A: res.A.map(convG1),
+      B1: res.B1.map(convG1),
+      B2: res.B2.map(convG2),
+      C: new Array(res.headerGroth.nPublic + 1).fill(null).concat(res.C.map(convG1)),
+      hExps: res.hExps.map(convG1),
+    };
+    // Our format (old snarkjs compat)
+    const pkey: ProvingKey = {
+      protocol: 'groth',
+      nVars: json.nVars,
+      nPublic: json.nPublic,
+      domainSize: json.domainSize,
+      domainBits: json.power,
+      // Polynominals (instead polsA/polsB/polsC)
+      ccoefs: json.ccoefs, // changed
+      //
+      A: json.A,
+      B1: json.B1,
+      B2: json.B2,
+      C: json.C,
+      //
+      vk_alfa_1: json.vk_alpha_1,
+      vk_beta_1: json.vk_beta_1,
+      vk_delta_1: json.vk_delta_1,
+      vk_beta_2: json.vk_beta_2,
+      vk_delta_2: json.vk_delta_2,
+      //
+      hExps: json.hExps,
+    };
+    const vkey: VerificationKey = {
+      protocol: 'groth',
+      nPublic: json.nPublic,
+      IC: json.IC,
+      vk_alfa_1: json.vk_alpha_1,
+      vk_beta_2: json.vk_beta_2,
+      vk_gamma_2: json.vk_gamma_2,
+      vk_delta_2: json.vk_delta_2,
+    };
+    return { json, pkey, vkey };
+  }
+
+  return { R1CS, binWitness, WTNS, getCircuitInfo, ZKeyRaw, parseZKey };
 };

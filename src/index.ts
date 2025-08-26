@@ -94,6 +94,13 @@ function pointCoder<T, F>(
 export type Constraint = Record<number, bigint>;
 export type G1Point = [bigint, bigint, bigint];
 export type G2Point = [[bigint, bigint], [bigint, bigint], [bigint, bigint]];
+export type Coefficient = {
+  value: bigint;
+  matrix: number;
+  constraint: number;
+  signal: number;
+};
+
 export interface ProvingKey {
   protocol?: 'groth';
   nVars: number;
@@ -101,9 +108,10 @@ export interface ProvingKey {
   domainBits: number;
   domainSize: number;
   // Polynominals
-  polsA: Constraint[];
-  polsB: Constraint[];
-  polsC: Constraint[];
+  polsA?: Constraint[]; // Record<number, bigint>;
+  polsB?: Constraint[];
+  polsC?: Constraint[];
+  ccoefs?: Coefficient[];
   //
   A: G1Point[];
   B1: G1Point[];
@@ -279,10 +287,31 @@ export function buildSnark(curve: BLSCurvePair, opts: GrothOpts = {}): SnarkCons
 
   function calculateH(proof: ProvingKey, witness: Witness) {
     const m = proof.domainSize;
-    const { pA, pB, pC } = sumABC(m, witness, proof.polsA, proof.polsB, proof.polsC);
-    // FFT only needed to optimize multiplication O(n²) to O(n log n)
-    // pA * pB - pC
-    return poly.sub(poly.mul(poly.ifft(pA), poly.ifft(pB)), poly.ifft(pC)).slice(m);
+    const bits = log2(m);
+    // new snarkjs omit polsC and re-construct them via coset stuff & shifts.
+    if (proof.ccoefs) {
+      const pols = [];
+      for (let i = 0; i < 3; i++) pols.push(new Array(m).fill(Fr.ZERO));
+      for (const { matrix, constraint, signal, value } of proof.ccoefs) {
+        pols[matrix][constraint] = Fr.add(pols[matrix][constraint], Fr.mul(value, witness[signal]));
+      }
+      const [pA, pB] = pols; // ignore polC
+      const pC = polyFr.dot(pA, pB);
+      // FFT to the shifted (coset) domain
+      // A(x)·B(x) − C(x) = H(x)·Z_H(x) -> H(g·ω^i) = (Acos[i]·Bcos[i] − Ccos[i]) / Z_H(g·ω^i)
+      const shift =
+        bits === roots.info.powerOfTwo ? Fr.mul(roots.info.G, roots.info.G) : roots.omega(bits + 1);
+      const Acos = poly.fft(polyFr.shift(poly.ifft(pA), shift), bits);
+      const Bcos = poly.fft(polyFr.shift(poly.ifft(pB), shift), bits);
+      const Ccos = poly.fft(polyFr.shift(poly.ifft(pC), shift), bits);
+      return polyFr.sub(polyFr.dot(Acos, Bcos), Ccos);
+    } else if (proof.polsA && proof.polsB && proof.polsC) {
+      const { pA, pB, pC } = sumABC(m, witness, proof.polsA, proof.polsB, proof.polsC);
+      // FFT only needed to optimize multiplication O(n²) to O(n log n)
+      // pA * pB - pC
+      return poly.sub(poly.mul(poly.ifft(pA), poly.ifft(pB)), poly.ifft(pC)).slice(m);
+    }
+    throw new Error('wrong proving key: no polynomials');
   }
   const utils = { G1, G2, G1c, G2c } satisfies PointsWithCoders;
   // TODO: add other proofs, which re-use many polynomial operations
