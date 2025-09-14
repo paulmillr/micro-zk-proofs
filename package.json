@@ -27,6 +27,14 @@
     "test": "node test/index.js",
     "test:deno": "deno test/index.js"
   },
+  "exports": {
+    ".": "./index.js",
+    "./mimcsponge.js": "./mimcsponge.js",
+    "./msm-worker.js": "./msm-worker.js",
+    "./msm.js": "./msm.js",
+    "./pedersen.js": "./pedersen.js",
+    "./witness.js": "./witness.js"
+  },
   "keywords": [
     "groth16",
     "plonk",
