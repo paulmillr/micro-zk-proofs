@@ -195,16 +195,12 @@ export function generateWitness(circJson: any): (input: any) => any {
           scope[name] = value;
         } else {
           if (scope[name] === undefined) scope[name] = [];
-          // TODO: replace with iterative version
-          function setVarArray(a: any, sels2: any, value: any) {
-            if (sels2.length == 1) {
-              a[sels2[0]] = value;
-            } else {
-              if (a[sels2[0]] === undefined) a[sels2[0]] = [];
-              setVarArray(a[sels2[0]], sels2.slice(1), value);
-            }
+          let cur = scope[name];
+          for (let i = 0; i < sels.length - 1; i++) {
+            if (cur[sels[i]] === undefined) cur[sels[i]] = [];
+            cur = cur[sels[i]];
           }
-          setVarArray(scope[name], sels, value);
+          cur[sels[sels.length - 1]] = value;
         }
         return value;
       },
@@ -243,15 +239,18 @@ export function generateWitness(circJson: any): (input: any) => any {
     for (let c in notInitSignals) if (notInitSignals[c] == 0) triggerComponent(c);
     for (let s in input) {
       currentComponent = 'main';
-      // Recursively iterates program and with scope stack
-      function iterate(values: any, selectors: any, cb: (selector: string[], value: any) => void) {
-        if (!Array.isArray(values)) return cb(selectors, values);
-        for (let i = 0; i < values.length; i++) iterate(values[i], [...selectors, i], cb);
+      const stack = [{ selectors: [] as string[], values: input[s] }];
+      while (stack.length) {
+        const { selectors, values } = stack.pop()!;
+        if (!Array.isArray(values)) {
+          if (values === undefined) throw new Error('Signal not defined:' + s);
+          ctx.setSignal(s, selectors, BigInt(values));
+          continue;
+        }
+        for (let j = values.length - 1; j >= 0; j--) {
+          stack.push({ selectors: [...selectors, `${j}`], values: values[j] });
+        }
       }
-      iterate(input[s], [], (selector, value) => {
-        if (value === undefined) throw new Error('Signal not defined:' + s);
-        ctx.setSignal(s, selector, BigInt(value));
-      });
     }
     for (let i = 0; i < circJson.nInputs; i++) {
       const idx = inputIdx(i);
@@ -266,6 +265,7 @@ export function generateWitness(circJson: any): (input: any) => any {
   };
 }
 
+/** Binary coder type for `.r1cs` files. */
 export type R1CSType = P.CoderType<
   P.StructInput<{
     magic: undefined;
