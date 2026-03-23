@@ -17,8 +17,19 @@ import { modifyArgs } from './msm.ts';
 // Check out 'msm.ts' for web workers.
 
 // Utils
+/** Bidirectional value coder. */
 export interface Coder<F, T> {
+  /**
+   * Encodes a value into its serialized form.
+   * @param from - Value to encode.
+   * @returns Encoded representation.
+   */
   encode(from: F): T;
+  /**
+   * Decodes a serialized value back into its native form.
+   * @param to - Encoded representation to decode.
+   * @returns Decoded value.
+   */
   decode(to: T): F;
 }
 type RandFn = (len: number) => Uint8Array;
@@ -43,6 +54,7 @@ function deepConvert(o: any, mapper: (o: any) => any): any {
 }
 // TODO: should be something like 'Deep' type here?
 // prettier-ignore
+/** Recursively converts bigint leaves into decimal strings. */
 export type BigintToString<T> =
   T extends bigint ? `${T}` :
   T extends Array<infer U> ? Array<BigintToString<U>> :
@@ -51,12 +63,22 @@ export type BigintToString<T> =
   T;
 
 // prettier-ignore
+/** Recursively converts decimal-string leaves back into bigint values. */
 export type StringToBigint<T> =
   T extends `${bigint}` ? bigint :
   T extends Array<infer U> ? Array<StringToBigint<U>> :
   T extends null ? null :
   T extends object ? { [K in keyof T]: StringToBigint<T[K]> } :
   T;
+/**
+ * Helper to serialize bigint-heavy objects through JSON-compatible strings.
+ * @example
+ * Encode bigint-heavy data for JSON transport, then decode it back.
+ * ```ts
+ * const encoded = stringBigints.encode({ value: 1n });
+ * const decoded = stringBigints.decode(encoded);
+ * ```
+ */
 export const stringBigints = {
   encode: <F>(o: F): BigintToString<F> => {
     return deepConvert(o, (o) =>
@@ -89,103 +111,183 @@ function pointCoder<T, F>(
   };
 }
 
+/** One linear constraint side keyed by signal index. */
 export type Constraint = Record<number, bigint>;
+/** Jacobian point over G1. */
 export type G1Point = [bigint, bigint, bigint];
+/** Jacobian point over G2. */
 export type G2Point = [[bigint, bigint], [bigint, bigint], [bigint, bigint]];
+/** Sparse coefficient reference inside a proving key matrix. */
 export type Coefficient = {
+  /** Field coefficient value. */
   value: bigint;
+  /** Matrix index that owns the coefficient. */
   matrix: number;
+  /** Constraint row index. */
   constraint: number;
+  /** Signal column index. */
   signal: number;
 };
 
+/** Groth16 proving key. */
 export interface ProvingKey {
+  /** Protocol name. */
   protocol?: 'groth';
+  /** Total number of circuit variables. */
   nVars: number;
+  /** Number of public signals, including outputs and inputs. */
   nPublic: number;
+  /** Log2 of the evaluation domain size. */
   domainBits: number;
+  /** Evaluation domain size. */
   domainSize: number;
   // Polynominals
-  polsA?: Constraint[]; // Record<number, bigint>;
+  /** Sparse A-matrix polynomials. */
+  polsA?: Constraint[];
+  /** Sparse B-matrix polynomials. */
   polsB?: Constraint[];
+  /** Sparse C-matrix polynomials. */
   polsC?: Constraint[];
+  /** Compact coefficient table used to reconstruct the sparse matrices. */
   ccoefs?: Coefficient[];
   //
+  /** A-query points in G1. */
   A: G1Point[];
+  /** B-query points in G1. */
   B1: G1Point[];
+  /** B-query points in G2. */
   B2: G2Point[];
+  /** C-query points in G1. */
   C: G1Point[];
   //
+  /** Alpha verifier key element in G1. */
   vk_alfa_1: G1Point;
+  /** Beta verifier key element in G1. */
   vk_beta_1: G1Point;
+  /** Delta verifier key element in G1. */
   vk_delta_1: G1Point;
+  /** Beta verifier key element in G2. */
   vk_beta_2: G2Point;
+  /** Delta verifier key element in G2. */
   vk_delta_2: G2Point;
   //
+  /** H-exponent points used for quotient commitments. */
   hExps: G1Point[];
 }
 
+/** Groth16 verification key. */
 export interface VerificationKey {
+  /** Protocol name. */
   protocol?: 'groth';
+  /** Number of public signals expected by the verifier. */
   nPublic: number;
+  /** Public input commitment bases. */
   IC: G1Point[];
   //
+  /** Alpha verifier key element in G1. */
   vk_alfa_1: G1Point;
+  /** Beta verifier key element in G2. */
   vk_beta_2: G2Point;
+  /** Gamma verifier key element in G2. */
   vk_gamma_2: G2Point;
+  /** Delta verifier key element in G2. */
   vk_delta_2: G2Point;
 }
 
+/** Witness vector produced by a circuit execution. */
 export type Witness = bigint[];
 
+/** Groth16 proof object. */
 export interface GrothProof {
+  /** Protocol name. */
   protocol: 'groth';
+  /** A proof element in G1. */
   pi_a: G1Point;
+  /** B proof element in G2. */
   pi_b: G2Point;
+  /** C proof element in G1. */
   pi_c: G1Point;
 }
+/** Proof together with public signals. */
 export interface ProofWithSignals {
+  /** Groth16 proof object. */
   proof: GrothProof;
+  /** Public signals used during verification. */
   publicSignals: Witness;
+  /** Optional commitment points for proof systems that emit them. */
   commitments?: G1Point[];
 }
 
+/** Minimal circuit metadata required for setup. */
 export type CircuitInfo = {
+  /** Total number of circuit variables. */
   nVars: number;
+  /** Number of public inputs. */
   nPubInputs: number;
+  /** Number of public outputs. */
   nOutputs: number;
-  constraints: [Constraint, Constraint, Constraint][]; // [A, B, C]
+  /** Constraint rows in `[A, B, C]` order. */
+  constraints: [Constraint, Constraint, Constraint][];
 };
 
+/** Toxic waste values produced during setup. */
 export interface ToxicWaste {
+  /** Secret evaluation point. */
   t: bigint;
+  /** Alpha secret multiplier. */
   kalfa: bigint;
+  /** Beta secret multiplier. */
   kbeta: bigint;
+  /** Gamma secret multiplier. */
   kgamma: bigint;
+  /** Delta secret multiplier. */
   kdelta: bigint;
 }
 
-/**
- * nqr: Override NonQuadratic Residue
- * unsafePreserveToxic: Output toxic values for tests
- */
+/** Groth16 constructor options. */
 export type GrothOpts = {
-  nqr?: number | bigint; //
+  /** Override the non-quadratic residue used by the FFT helper tables. */
+  nqr?: number | bigint;
+  /** Return toxic waste values for tests and fixture generation. */
   unsafePreserveToxic?: boolean;
+  /**
+   * Custom G1 MSM implementation.
+   * @param input - Point-scalar pairs to multiply.
+   * @returns MSM result in G1.
+   */
   G1msm?: (input: MSMInput<bigint>[]) => Promise<WeierstrassPoint<bigint>>;
+  /**
+   * Custom G2 MSM implementation.
+   * @param input - Point-scalar pairs to multiply.
+   * @returns MSM result in G2.
+   */
   G2msm?: (input: MSMInput<Fp2>[]) => Promise<WeierstrassPoint<Fp2>>;
 };
 
+/** Curve points bundled together with their coders. */
 export interface PointsWithCoders {
+  /** G1 point constructor. */
   G1: WeierstrassPointCons<bigint>;
+  /** G2 point constructor. */
   G2: WeierstrassPointCons<Fp2>;
+  /** Coder for G1 points. */
   G1c: Coder<WeierstrassPoint<bigint>, G1Point>;
+  /** Coder for G2 points. */
   G2c: Coder<WeierstrassPoint<Fp2>, G2Point>;
 }
 
+/** Snark helpers returned by `buildSnark()`. */
 export interface SnarkConstructorOutput {
+  /** Curve constructors and point coders used by the proof helpers. */
   utils: PointsWithCoders;
+  /** Groth16 setup, proving, and verification helpers. */
   groth: {
+    /**
+     * Builds proving and verification keys for a circuit.
+     * @param circuit - Circuit metadata and constraints.
+     * @param rnd - Optional randomness source used to sample toxic waste.
+     * @returns Proving key, verification key, and optional toxic waste.
+     */
     setup(
       circuit: CircuitInfo,
       rnd?: RandFn
@@ -194,11 +296,46 @@ export interface SnarkConstructorOutput {
       vkey: VerificationKey;
       toxic: ToxicWaste | undefined;
     };
+    /**
+     * Creates a Groth16 proof for a witness.
+     * @param pkey - Proving key.
+     * @param witness - Witness vector.
+     * @param rnd - Optional randomness source.
+     * @returns Proof and public signals.
+     */
     createProof(pkey: ProvingKey, witness: Witness, rnd?: RandFn): Promise<ProofWithSignals>;
+    /**
+     * Verifies a Groth16 proof.
+     * @param vkey - Verification key.
+     * @param proofWithSignals - Proof plus public signals.
+     * @returns `true` when the proof verifies.
+     */
     verifyProof(vkey: VerificationKey, proofWithSignals: ProofWithSignals): boolean;
   };
 }
 
+/**
+ * Builds Groth16 helpers for a pairing-friendly curve.
+ * @param curve - Pairing-friendly curve implementation.
+ * @param opts - Options for FFT setup and optional MSM backends. See {@link GrothOpts}.
+ * @returns Snark setup, proof, and verification helpers.
+ * @example
+ * Build curve-specific Groth16 helpers, then run a tiny self-contained proof round-trip.
+ * ```ts
+ * import { buildSnark, type CircuitInfo } from 'micro-zk-proofs';
+ * const { bn254: nobleBn254 } = await import('@noble/curves/bn254.js');
+ * const snark = buildSnark(nobleBn254);
+ * const circuit: CircuitInfo = {
+ *   nVars: 2,
+ *   nPubInputs: 0,
+ *   nOutputs: 0,
+ *   constraints: [[{}, {}, {}]],
+ * };
+ * const setup = snark.groth.setup(circuit);
+ * const proof = await snark.groth.createProof(setup.pkey, [1n, 0n]);
+ * snark.groth.verifyProof(setup.vkey, proof);
+ * ```
+ */
 export function buildSnark(curve: BLSCurvePair, opts: GrothOpts = {}): SnarkConstructorOutput {
   // Utils
   const G1 = curve.G1.Point;
@@ -517,11 +654,20 @@ export function buildSnark(curve: BLSCurvePair, opts: GrothOpts = {}): SnarkCons
 /**
  * ZK Snarks over bn254 (aka bn128) curve.
  * @example
- * ```js
- * const proof = await zkp.bn254.groth.createProof(provingKey, witness);
- * const isValid = zkp.bn254.groth.verifyProof(verificationKey, proof);
+ * Build the bundled bn254 helpers and run a tiny self-contained Groth16 round-trip.
+ * ```ts
+ * import { bn254, type CircuitInfo } from 'micro-zk-proofs';
+ * const circuit: CircuitInfo = {
+ *   nVars: 2,
+ *   nPubInputs: 0,
+ *   nOutputs: 0,
+ *   constraints: [[{}, {}, {}]],
+ * };
+ * const setup = bn254.groth.setup(circuit);
+ * const proof = await bn254.groth.createProof(setup.pkey, [1n, 0n]);
+ * bn254.groth.verifyProof(setup.vkey, proof);
  * ```
  */
-export const bn254: SnarkConstructorOutput = buildSnark(nobleBn254, {});
+export const bn254: SnarkConstructorOutput = /* @__PURE__ */ buildSnark(nobleBn254, {});
 // NOTE: this is unsafe and may not work (untested for now)
 //export const bls12_381 = buildSnark(nobleBls12, {});

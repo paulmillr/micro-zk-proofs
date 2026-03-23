@@ -11,9 +11,26 @@ import {
 import { bn254 } from '@noble/curves/bn254.js';
 import { wrkr } from 'micro-wrkr';
 
-export type MSMInput<T> = { point: WeierstrassPoint<T>; scalar: bigint };
+/** Multi-scalar multiplication input pair. */
+export type MSMInput<T> = {
+  /** Curve point to multiply. */
+  point: WeierstrassPoint<T>;
+  /** Scalar multiplier. */
+  scalar: bigint;
+};
+/** Worker handlers exposed for bn254 MSM execution. */
 export type bn254MSMInput = {
+  /**
+   * Runs a G1 multi-scalar multiplication batch.
+   * @param list - Point-scalar pairs.
+   * @returns MSM result in G1.
+   */
   bn254_msmG1: (list: MSMInput<bigint>[]) => WeierstrassPoint<bigint>;
+  /**
+   * Runs a G2 multi-scalar multiplication batch.
+   * @param list - Point-scalar pairs.
+   * @returns MSM result in G2.
+   */
   bn254_msmG2: (list: MSMInput<Fp2>[]) => WeierstrassPoint<Fp2>;
 };
 
@@ -31,5 +48,6 @@ const handlers: bn254MSMInput = {
   bn254_msmG2: buildMSM(bn254.G2.Point),
 };
 
+/** Worker handler type exported for `wrkr`. */
 export type Handlers = bn254MSMInput;
 wrkr.initWorker(handlers);

@@ -15,8 +15,16 @@ Create & verify zero-knowledge SNARK proofs in parallel, using [noble cryptograp
 
 ```ts
 import * as zkp from 'micro-zk-proofs';
-const proof = await zkp.bn254.groth.createProof(provingKey, witness);
-const isValid = zkp.bn254.groth.verifyProof(verificationKey, proof);
+import { generateWitness } from 'micro-zk-proofs/witness.js';
+
+// Wrap setup, witness generation, proof creation, and verification once you have a circuit.
+const prove = async (circuit: zkp.CircuitInfo, input: Record<string, string>) => {
+  const setup = zkp.bn254.groth.setup(circuit);
+  const witness = generateWitness(circuit)(input);
+  const proof = await zkp.bn254.groth.createProof(setup.pkey, witness);
+  const isValid = zkp.bn254.groth.verifyProof(setup.vkey, proof);
+  return { proof, isValid };
+};
 
 // Typed as following:
 type Constraint = Record<number, bigint>;
@@ -150,8 +158,8 @@ cd output/sum_test_js
 mv witness_calculator.js witness_calculator.cjs
 ```
 
-```js
-import { bn254 } from '@noble/curves/bn254';
+```ts
+import { bn254 } from '@noble/curves/bn254.js';
 import * as zkp from 'micro-zk-proofs';
 import * as zkpWitness from 'micro-zk-proofs/witness.js';
 import { deepStrictEqual } from 'node:assert';
@@ -161,13 +169,13 @@ import { readFileSync } from 'node:fs';
 import { dirname, join as pjoin } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const _dirname = dirname(fileURLToPath(import.meta.url));
-const read = (...paths) => readFileSync(pjoin(_dirname, ...paths));
+const read = (...paths: string[]) => readFileSync(pjoin(_dirname, ...paths));
 
 console.log('# wasm circom v2');
 (async () => {
   const input = { a: '33', b: '34' };
   // 2. setup
-  const coders = zkpWitness.getCoders(bn254.fields.Fr);
+  const coders = zkpWitness.getCoders(bn254);
   const setupWasm = zkp.bn254.groth.setup(
     coders.getCircuitInfo(read('output', 'sum_test.r1cs'))
   );
@@ -202,7 +210,7 @@ cd $dir
 git checkout v0.0.12
 ```
 
-```js
+```ts
 import * as zkp from 'micro-zk-proofs';
 import { deepStrictEqual } from 'node:assert';
 
@@ -210,11 +218,11 @@ import { readFileSync } from 'node:fs';
 import { dirname, join as pjoin } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const _dirname = dirname(fileURLToPath(import.meta.url));
-const read = (...paths) => readFileSync(pjoin(_dirname, ...paths));
+const read = (...paths: string[]) => readFileSync(pjoin(_dirname, ...paths), 'utf8');
 
 console.log('# wasm circom v1');
 (async () => {
-  const bigjson = (path) => zkp.stringBigints.decode(
+  const bigjson = (path: string) => zkp.stringBigints.decode(
     JSON.parse(read('wasmsnark', 'example', 'bn128', path))
   );
   const pkey = bigjson('proving_key.json');
@@ -260,7 +268,7 @@ npm install
 ```
 
 ```js
-import { bn254 } from '@noble/curves/bn254';
+import { bn254 } from '@noble/curves/bn254.js';
 import * as zkp from 'micro-zk-proofs';
 import * as zkpMsm from 'micro-zk-proofs/msm.js';
 import * as zkpWitness from 'micro-zk-proofs/witness.js';
@@ -270,13 +278,13 @@ import sumCircuit from './sum-circuit.json' with { "type": "json" };
 const groth = zkp.bn254.groth;
 const input = { a: '33', b: '34' };
 const setupJs = groth.setup(sumCircuit);
+const witnessJs = zkpWitness.generateWitness(sumCircuit)(input);
 
 (async () => {
   // 2. setup
   // Generate using circom_old circuit
   // NOTE: we have this small util to remove dependencies on snarkjs for witness generation
   // 3. generate witness
-  const witnessJs = zkpWitness.generateWitness(sumCircuit)(input);
   //deepStrictEqual(witness0, witnessJs); // -> will fail, because we have different constrains!
   // 4. create proof
   const proofJs = await groth.createProof(setupJs.pkey, witnessJs);

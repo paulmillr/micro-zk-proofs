@@ -79,6 +79,18 @@ const select = (a: any, selectors: string[]): any => {
   return a;
 };
 type Scope = Record<string, any>;
+/**
+ * Builds a witness generator for a legacy circom-js circuit JSON.
+ * @param circJson - Circom circuit JSON artifact.
+ * @returns Function that executes the circuit and returns the witness.
+ * @example
+ * Load a circom JSON circuit artifact and execute it to get the witness vector.
+ * ```ts
+ * import { generateWitness } from 'micro-zk-proofs/witness.js';
+ * import sumCircuit from './sum-circuit.json' with { type: 'json' };
+ * const witness = generateWitness(sumCircuit)({ a: '33', b: '34' });
+ * ```
+ */
 export function generateWitness(circJson: any): (input: any) => any {
   const P = nobleBn254.fields.Fr.ORDER;
   const MASK = bitMask(nobleBn254.fields.Fr.BITS);
@@ -291,6 +303,7 @@ export type R1CSType = P.CoderType<
   }>
 >;
 
+/** Binary coder type for `.wtns` files. */
 export type WTNSType = P.CoderType<
   P.StructInput<{
     magic: undefined;
@@ -311,7 +324,19 @@ export type WTNSType = P.CoderType<
   }>
 >;
 
-/** Binary coders for Circom2 */
+/**
+ * Binary coders and parsers for Circom2 artifacts.
+ * @param curve - Curve pair used for field sizing and point decoding.
+ * @returns R1CS, witness, and zkey coders plus parse helpers.
+ * @example
+ * Build the coders once, then use them to parse and encode Circom2 artifacts.
+ * ```ts
+ * const { bn254 } = await import('@noble/curves/bn254.js');
+ * const coders = getCoders(bn254);
+ * const bytes = coders.binWitness.encode([1n, 2n]);
+ * coders.binWitness.decode(bytes);
+ * ```
+ */
 export const getCoders = (
   curve: BLSCurvePair
 ): {

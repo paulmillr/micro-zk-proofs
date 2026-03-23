@@ -1,6 +1,6 @@
 /**
  * Pedersen Hash over babyjubjub elliptic curve, defined in
- * [EIP-2494](https://eips.ethereum.org/EIPS/eip-2494).
+ * {@link https://eips.ethereum.org/EIPS/eip-2494 | EIP-2494}.
  * jubjub     - edwards over bls12-381 scalar
  * babyjubjub - edwards over bn254 scalar
  * Using scalar as field allows to be used inside of zk-circuits.
@@ -17,6 +17,17 @@ type EdwardsPoint = typeof babyjubjub.Point.BASE;
 
 // Seems like twistedEdwards fromBytes/toBytes, but with 'x > Fr.ORDER >> 1n' instead of oddity?
 // NOTE: we need to be as close as possible to original, otherwise hashes will change!
+/**
+ * Pedersen point encoder/decoder for babyjubjub points.
+ * @example
+ * Encode a babyjubjub point to bytes and decode it back.
+ * ```ts
+ * const { babyjubjub } = await import('@noble/curves/misc.js');
+ * const point = babyjubjub.Point.BASE;
+ * const encoded = Point.encode(point);
+ * Point.decode(encoded);
+ * ```
+ */
 export const Point = {
   encode: (p: any): Uint8Array => {
     const { x, y } = p.toAffine();
@@ -66,8 +77,8 @@ function basePoint(idx: number) {
   return p;
 }
 
-const SUBORDER = babyjubjub.Point.Fn.ORDER >> 3n;
 function getScalars(msg: Uint8Array) {
+  const SUBORDER = babyjubjub.Point.Fn.ORDER >> 3n;
   const res: bigint[] = [];
   // Very fragile wNAF (4-bit) like structure to avoid zero points
   const window = (n: number) => {
@@ -94,6 +105,16 @@ function getScalars(msg: Uint8Array) {
   return res;
 }
 
+/**
+ * Computes the Pedersen hash for the input bytes.
+ * @param msg - Message bytes to hash.
+ * @returns Encoded babyjubjub point bytes.
+ * @example
+ * Hash message bytes into an encoded babyjubjub point.
+ * ```ts
+ * const digest = pedersenHash(new Uint8Array([1, 2, 3]));
+ * ```
+ */
 export function pedersenHash(msg: Uint8Array): Uint8Array {
   const p = getScalars(msg).reduce(
     (acc, i, j) => acc.add(basePoint(j).multiply(i)),
