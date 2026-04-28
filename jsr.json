@@ -1,6 +1,6 @@
 {
   "name": "@paulmillr/micro-zk-proofs",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "exports": {
     ".": "./src/index.ts",
     "./mimcsponge.js": "./src/mimcsponge.ts",
@@ -13,7 +13,7 @@
     "@noble/curves": "jsr:@noble/curves@~2.2.0",
     "@noble/hashes": "jsr:@noble/hashes@~2.2.0",
     "micro-packed": "jsr:@paulmillr/micro-packed@~0.9.0",
-    "micro-wrkr": "jsr:@paulmillr/micro-wrkr@~0.9.0"
+    "micro-wrkr": "jsr:@paulmillr/micro-wrkr@~0.2.0"
   },
   "publish": {
     "include": [
