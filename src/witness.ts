@@ -20,6 +20,7 @@ import {
   type VerificationKey,
 } from './index.ts';
 import type { BlsCurvePair as BLSCurvePair } from '@noble/curves/abstract/bls.js';
+import type { TArg, TRet } from '@noble/hashes/utils.js';
 
 function monkeyPatchBigInt() {
   const methods = {
@@ -46,24 +47,30 @@ function monkeyPatchBigInt() {
     shr: (a: bigint, b: bigint) => a >> BigInt(b),
   };
   let patched = false;
-  let orig: Record<string, Function> = {};
+  let orig: Record<string, PropertyDescriptor | undefined> = {};
   const proto = BigInt.prototype as any;
   return {
     patch() {
       if (patched) throw new Error('bigint: already patched');
       for (const name in methods) {
-        orig[name] = proto[name];
-        proto[name] = function (...args: any[]) {
-          return (methods as any)[name](this, ...args);
-        };
+        // Preserve descriptors: callers may have accessors or own undefined-valued properties here.
+        orig[name] = Object.getOwnPropertyDescriptor(proto, name);
+        Object.defineProperty(proto, name, {
+          configurable: true,
+          enumerable: orig[name]?.enumerable || false,
+          value: function (...args: any[]) {
+            return (methods as any)[name](this, ...args);
+          },
+          writable: true,
+        });
       }
       patched = true;
     },
     restore() {
       if (!patched) throw new Error('bigint: not patched');
       for (const name in methods) {
-        if (orig[name] === undefined) delete proto[name];
-        else proto[name] = orig[name];
+        if (!orig[name]) delete proto[name];
+        else Object.defineProperty(proto, name, orig[name]);
       }
       orig = {};
       patched = false;
@@ -84,11 +91,36 @@ type Scope = Record<string, any>;
  * @param circJson - Circom circuit JSON artifact.
  * @returns Function that executes the circuit and returns the witness.
  * @example
- * Load a circom JSON circuit artifact and execute it to get the witness vector.
+ * Build a witness runner from a circom JSON circuit artifact.
  * ```ts
  * import { generateWitness } from 'micro-zk-proofs/witness.js';
- * import sumCircuit from './sum-circuit.json' with { type: 'json' };
- * const witness = generateWitness(sumCircuit)({ a: '33', b: '34' });
+ * // Addition circuit: witness output is one, a + b, b, a.
+ * const circuitJson = {
+ *   nVars: 4,
+ *   nInputs: 2,
+ *   nOutputs: 1,
+ *   nSignals: 4,
+ *   templates: {
+ *     Main: `function(ctx) {
+ *       ctx.setSignal(
+ *         "out",
+ *         [],
+ *         bigInt(ctx.getSignal("a", [])).add(bigInt(ctx.getSignal("b", []))).mod(__P__)
+ *       );
+ *     }`,
+ *   },
+ *   functions: {},
+ *   components: [{ name: 'main', params: {}, template: 'Main', inputSignals: 2 }],
+ *   signals: [
+ *     { names: ['one'], triggerComponents: [] },
+ *     { names: ['main.out'], triggerComponents: [] },
+ *     { names: ['main.b'], triggerComponents: [0] },
+ *     { names: ['main.a'], triggerComponents: [0] },
+ *   ],
+ *   signalName2Idx: { one: 0, 'main.out': 1, 'main.b': 2, 'main.a': 3 },
+ * };
+ * const witness = generateWitness(circuitJson)({ a: '33', b: '34' });
+ * // [1n, 67n, 34n, 33n]
  * ```
  */
 export function generateWitness(circJson: any): (input: any) => any {
@@ -119,10 +151,12 @@ export function generateWitness(circJson: any): (input: any) => any {
   }
   function inputIdx(i: any) {
     if (i >= circJson.nInputs) throw new Error('Accessing an invalid input: ' + i);
+    // Witness slot 0 is the constant one, so declared inputs start after the output slots.
     return circJson.nOutputs + 1 + i;
   }
   function getSignalIdx(name: any) {
     if (circJson.signalName2Idx[name] !== undefined) return circJson.signalName2Idx[name];
+    // signalNames() also queries raw witness indices when building error messages.
     if (!isNaN(name)) return Number(name);
     throw new Error('Invalid signal identifier: ' + name);
   }
@@ -130,7 +164,6 @@ export function generateWitness(circJson: any): (input: any) => any {
   const patcher = monkeyPatchBigInt();
 
   return function (input: any): any {
-    patcher.patch();
     const witness = new Array(circJson.nSignals);
     let currentComponent: string | undefined;
     let scopes: Scope[] = []; // scope stack
@@ -233,35 +266,40 @@ export function generateWitness(circJson: any): (input: any) => any {
         throw new Error(`Constraint doesn't match ${currentComponent}: ${errStr} -> ${a} != ${b}`);
       },
     };
-    // Processing
-    for (const c in components) notInitSignals[c] = components[c].inputSignals;
-    ctx.setSignal('one', [], BigInt(1));
-    for (let c in notInitSignals) if (notInitSignals[c] == 0) triggerComponent(c);
-    for (let s in input) {
-      currentComponent = 'main';
-      const stack = [{ selectors: [] as string[], values: input[s] }];
-      while (stack.length) {
-        const { selectors, values } = stack.pop()!;
-        if (!Array.isArray(values)) {
-          if (values === undefined) throw new Error('Signal not defined:' + s);
-          ctx.setSignal(s, selectors, BigInt(values));
-          continue;
-        }
-        for (let j = values.length - 1; j >= 0; j--) {
-          stack.push({ selectors: [...selectors, `${j}`], values: values[j] });
+    patcher.patch();
+    try {
+      // Processing
+      for (const c in components) notInitSignals[c] = components[c].inputSignals;
+      ctx.setSignal('one', [], BigInt(1));
+      for (let c in notInitSignals) if (notInitSignals[c] == 0) triggerComponent(c);
+      // Circuit JSON inputs are own fields; prototypes may carry unrelated app metadata.
+      for (const s of Object.keys(input)) {
+        currentComponent = 'main';
+        const stack = [{ selectors: [] as string[], values: input[s] }];
+        while (stack.length) {
+          const { selectors, values } = stack.pop()!;
+          if (!Array.isArray(values)) {
+            if (values === undefined) throw new Error('Signal not defined:' + s);
+            ctx.setSignal(s, selectors, BigInt(values));
+            continue;
+          }
+          for (let j = values.length - 1; j >= 0; j--) {
+            stack.push({ selectors: [...selectors, `${j}`], values: values[j] });
+          }
         }
       }
-    }
-    for (let i = 0; i < circJson.nInputs; i++) {
-      const idx = inputIdx(i);
-      if (witness[idx] === undefined)
-        throw new Error('Input Signal not assigned: ' + signalNames(idx));
-    }
-    for (let i = 0; i < witness.length; i++)
-      if (witness[i] === undefined) throw new Error('Signal not assigned: ' + signalNames(i));
+      for (let i = 0; i < circJson.nInputs; i++) {
+        const idx = inputIdx(i);
+        if (witness[idx] === undefined)
+          throw new Error('Input Signal not assigned: ' + signalNames(idx));
+      }
+      for (let i = 0; i < witness.length; i++)
+        if (witness[i] === undefined) throw new Error('Signal not assigned: ' + signalNames(i));
 
-    patcher.restore();
-    return witness.slice(0, circJson.nVars);
+      return witness.slice(0, circJson.nVars);
+    } finally {
+      patcher.restore();
+    }
   };
 }
 
@@ -324,6 +362,15 @@ export type WTNSType = P.CoderType<
   }>
 >;
 
+type CodersOutput = {
+  R1CS: R1CSType;
+  binWitness: P.CoderType<bigint[]>;
+  WTNS: WTNSType;
+  getCircuitInfo: (bytes: Uint8Array) => CircuitInfo;
+  ZKeyRaw: P.CoderType<any>;
+  parseZKey: (bytes: Uint8Array) => { json: any; pkey: ProvingKey; vkey: VerificationKey };
+};
+
 /**
  * Binary coders and parsers for Circom2 artifacts.
  * @param curve - Curve pair used for field sizing and point decoding.
@@ -337,16 +384,7 @@ export type WTNSType = P.CoderType<
  * coders.binWitness.decode(bytes);
  * ```
  */
-export const getCoders = (
-  curve: BLSCurvePair
-): {
-  R1CS: R1CSType;
-  binWitness: P.CoderType<bigint[]>;
-  WTNS: WTNSType;
-  getCircuitInfo: (bytes: Uint8Array) => CircuitInfo;
-  ZKeyRaw: P.CoderType<any>;
-  parseZKey: (bytes: Uint8Array) => { json: any; pkey: ProvingKey; vkey: VerificationKey };
-} => {
+export const getCoders = (curve: BLSCurvePair): TRet<CodersOutput> => {
   const field = curve.fields.Fr;
   // NOTE: we need to pass field here, even if bigints are variable size, they are fixed to field bytes!
   const fieldBytes = field.BYTES;
@@ -360,9 +398,38 @@ export const getCoders = (
     nLables: P.U64LE, // Total Number of wires private input wires. They should be starting just after the public inputs
     mConstraints: P.U32LE, // Total Number of constraints
   });
+  type ConstraintPair = [number, bigint];
+  const constraintDict = {
+    encode: (from: ConstraintPair[]): Constraint => {
+      if (!Array.isArray(from)) throw new Error('array expected');
+      const to: Constraint = {};
+      for (const item of from) {
+        if (!Array.isArray(item) || item.length !== 2)
+          throw new Error(`array of two elements expected`);
+        const [key, value] = item;
+        if (Object.prototype.hasOwnProperty.call(to, key))
+          throw new Error(`key(${key}) appears twice in constraint`);
+        to[key] = value;
+      }
+      return to;
+    },
+    decode: (to: Constraint): ConstraintPair[] => {
+      if (to === null || typeof to !== 'object' || Array.isArray(to))
+        throw new Error(`expected constraint object, got ${to}`);
+      return Object.entries(to).map(([key, value]): ConstraintPair => {
+        // Object.entries() stringifies numeric R1CS signal ids; U32LE needs the number back.
+        if (!/^(0|[1-9][0-9]*)$/.test(key))
+          throw new Error(`expected uint32 constraint key, got ${key}`);
+        const n = Number(key);
+        if (!Number.isSafeInteger(n) || n < 0 || n > 0xffffffff)
+          throw new Error(`expected uint32 constraint key, got ${key}`);
+        return [n, value];
+      });
+    },
+  };
   const Constraint: P.CoderType<Constraint> = P.apply(
     P.array(P.U32LE, P.tuple([P.U32LE, fieldCoder])),
-    P.coders.dict() as any // TODO: dict key is string, not number
+    constraintDict
   );
   // A*B-C = 0
   const Constraints: P.CoderType<[Constraint, Constraint, Constraint][]> = P.array(
@@ -370,7 +437,9 @@ export const getCoders = (
     P.tuple([Constraint, Constraint, Constraint])
   );
   const WireMap = P.array(null, P.U64LE);
-  const section = <T>(inner: P.CoderType<T>) => P.prefix(P.U64LE, inner);
+  // prefix() emits JS byte lengths, while Circom section headers serialize them as u64.
+  const sectionLen = P.apply(P.U64LE, P.coders.numberBigint);
+  const section = <T>(inner: P.CoderType<T>) => P.prefix(sectionLen, inner);
   const empty = P.bytes(null);
   const R1CSSection = P.mappedTag(P.U32LE, {
     header: [0x01, section(Header)],
@@ -443,7 +512,7 @@ export const getCoders = (
     sections: P.array(P.U32LE, ZKeySection),
   });
 
-  const getCircuitInfo = (bytes: Uint8Array): CircuitInfo => {
+  const getCircuitInfo = (bytes: TArg<Uint8Array>): CircuitInfo => {
     const data = R1CS.decode(bytes);
     const constraints = data.sections.find((i) => i.TAG === 'constraint');
     if (!constraints) throw new Error('R1CS: cannot find constraints');
@@ -457,13 +526,14 @@ export const getCoders = (
       constraints: constraints.data,
     };
   };
-  function parseZKey(zkey: Uint8Array) {
+  function parseZKey(zkey: TArg<Uint8Array>) {
     const { Fr, Fp } = curve.fields;
     // Montgomery encoding of field elements
     const fieldFromMont = (f: IField<bigint>, is1: boolean) => {
       const Rr = f.pow(BigInt(2), BigInt(f.BYTES * 8));
       const RRi = f.inv(Rr);
       const RRi2 = f.mul(RRi, RRi);
+      // G1/G2 coordinates carry one Montgomery factor; coefficient field elements need two.
       return (x: bigint) => f.mul(x, is1 ? RRi : RRi2);
     };
     const is0 = (x: bigint) => x === BigInt(0);
@@ -530,6 +600,7 @@ export const getCoders = (
       A: res.A.map(convG1),
       B1: res.B1.map(convG1),
       B2: res.B2.map(convG2),
+      // snarkjs zkeys omit the leading zero C-query entries for public signals.
       C: new Array(res.headerGroth.nPublic + 1).fill(null).concat(res.C.map(convG1)),
       hExps: res.hExps.map(convG1),
     };
@@ -568,5 +639,5 @@ export const getCoders = (
     return { json, pkey, vkey };
   }
 
-  return { R1CS, binWitness, WTNS, getCircuitInfo, ZKeyRaw, parseZKey };
+  return { R1CS, binWitness, WTNS, getCircuitInfo, ZKeyRaw, parseZKey } as TRet<CodersOutput>;
 };

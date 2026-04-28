@@ -31,8 +31,9 @@ export function getIV(seed: string = SEED): bigint {
 /**
  * Derives the MiMC round constants from the seed.
  * @param seed - Seed string used for derivation.
- * @param nRounds - Number of MiMC rounds to generate.
+ * @param nRounds - Number of MiMC rounds to generate; must include the two zero endpoints.
  * @returns Round constant list.
+ * @throws If `nRounds` is not an integer at least 2. {@link Error}
  * @example
  * Rebuild a short constant table for test vectors or compatibility checks.
  * ```ts
@@ -40,6 +41,9 @@ export function getIV(seed: string = SEED): bigint {
  * ```
  */
 export function getConstants(seed: string = SEED, nRounds: number = NROUNDS): bigint[] {
+  // Circomlib-compatible tables reserve first and last constants as zero endpoints.
+  if (!Number.isSafeInteger(nRounds) || nRounds < 2)
+    throw new Error(`expected nRounds >= 2, got ${nRounds}`);
   const cts = [BigInt(0)];
   let c = keccak_256(utf8ToBytes(seed));
   for (let i = 0; i < nRounds - 2; i++)
@@ -78,8 +82,9 @@ export function hash(L: bigint, R: bigint, k: bigint): { xL: bigint; xR: bigint 
  * Hashes one or more field elements with the MiMC sponge.
  * @param lst - Input field elements.
  * @param key - Optional key value.
- * @param numOutputs - Number of outputs to squeeze.
+ * @param numOutputs - Number of outputs to squeeze; must be at least one.
  * @returns One field element or an array of field elements.
+ * @throws If `numOutputs` is not an integer at least 1. {@link Error}
  * @example
  * Hash one or more field elements and optionally squeeze multiple outputs.
  * ```ts
@@ -87,6 +92,8 @@ export function hash(L: bigint, R: bigint, k: bigint): { xL: bigint; xR: bigint 
  * ```
  */
 export function multiHash(lst: bigint[], key: bigint = Fr.ZERO, numOutputs = 1): bigint | bigint[] {
+  if (!Number.isSafeInteger(numOutputs) || numOutputs < 1)
+    throw new Error(`expected numOutputs >= 1, got ${numOutputs}`);
   let R = Fr.ZERO;
   let C = Fr.ZERO;
   for (let i = 0; i < lst.length; i++)

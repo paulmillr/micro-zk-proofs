@@ -1,5 +1,5 @@
 import { describe, should } from '@paulmillr/jsbt/test.js';
-import { deepStrictEqual } from 'node:assert';
+import { deepStrictEqual, throws } from 'node:assert';
 import * as mimcsponge from '../mimcsponge.js';
 
 describe('MiMC Sponge', async () => {
@@ -10,6 +10,9 @@ describe('MiMC Sponge', async () => {
     );
   });
   should('constants', () => {
+    for (const nRounds of [0, 1])
+      throws(() => mimcsponge.getConstants('mimcsponge', nRounds), /expected nRounds >= 2/);
+    deepStrictEqual(mimcsponge.getConstants('mimcsponge', 2), [0n, 0n]);
     const cts = mimcsponge.getConstants();
     deepStrictEqual(cts, [
       0n,
@@ -240,6 +243,23 @@ describe('MiMC Sponge', async () => {
       xL: 18635233944808208882966072806738683940518399005033812161015824420796221493526n,
       xR: 19140941253229475753487820384337024263930106104819057875453076717944303574361n,
     });
+  });
+  should('multiHash', () => {
+    const input = [1n, 2n];
+    throws(() => mimcsponge.multiHash(input, 0n, 0), /expected numOutputs >= 1/);
+    deepStrictEqual(
+      mimcsponge.multiHash(input, 0n),
+      19814528709687996974327303300007262407299502847885145507292406548098437687919n
+    );
+    deepStrictEqual(
+      mimcsponge.multiHash(input, 0n, 1),
+      19814528709687996974327303300007262407299502847885145507292406548098437687919n
+    );
+    deepStrictEqual(mimcsponge.multiHash(input, 0n, 2), [
+      19814528709687996974327303300007262407299502847885145507292406548098437687919n,
+      21479918933254162297266020499931408698629819071798560668427831994080392652265n,
+    ]);
+    deepStrictEqual(input, [1n, 2n]);
   });
 });
 

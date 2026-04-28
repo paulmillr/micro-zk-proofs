@@ -7,8 +7,11 @@ import type { WeierstrassPoint, WeierstrassPointCons } from '@noble/curves/abstr
 import { bn254 as nobleBn254 } from '@noble/curves/bn254.js';
 import { bytesToNumberBE } from '@noble/curves/utils.js';
 import { randomBytes } from '@noble/hashes/utils.js';
+import type { TArg, TRet } from '@noble/hashes/utils.js';
 import type { MSMInput } from './msm-worker.ts';
 import { modifyArgs } from './msm.ts';
+
+export type { TArg, TRet } from '@noble/hashes/utils.js';
 
 // It is hard to make groth16 async / fast, because MSM perf is
 // non-linear (2048 => 1024 points is not 2x faster).
@@ -33,9 +36,15 @@ export interface Coder<F, T> {
   decode(to: T): F;
 }
 type RandFn = (len: number) => Uint8Array;
+const U32_MAX = 0xffffffff;
+const MAX_DOMAIN_BITS = 30;
+const _0n = /* @__PURE__ */ BigInt(0);
+const _1n = /* @__PURE__ */ BigInt(1);
 
 function log2(n: number) {
-  if (!Number.isSafeInteger(n) || n <= 0) throw new Error('Input must be a safe positive integer');
+  // Domain sizes are serialized as U32LE in witness artifacts, and clz32 truncates above uint32.
+  if (!Number.isSafeInteger(n) || n <= 0 || n > U32_MAX)
+    throw new Error(`expected uint32 positive integer, got ${n}`);
   return 31 - Math.clz32(n);
 }
 
@@ -65,6 +74,7 @@ export type BigintToString<T> =
 // prettier-ignore
 /** Recursively converts decimal-string leaves back into bigint values. */
 export type StringToBigint<T> =
+  T extends `-${string}` ? T :
   T extends `${bigint}` ? bigint :
   T extends Array<infer U> ? Array<StringToBigint<U>> :
   T extends null ? null :
@@ -79,36 +89,44 @@ export type StringToBigint<T> =
  * const decoded = stringBigints.decode(encoded);
  * ```
  */
-export const stringBigints = {
+export const stringBigints: {
+  encode: <F>(o: F) => BigintToString<F>;
+  decode: <T>(o: T) => StringToBigint<T>;
+} = /* @__PURE__ */ Object.freeze({
   encode: <F>(o: F): BigintToString<F> => {
-    return deepConvert(o, (o) =>
-      typeof o === 'bigint' ? o.toString(10) : undefined
-    ) as BigintToString<F>;
+    return deepConvert(o, (o) => {
+      if (typeof o !== 'bigint') return undefined;
+      // Old proof/key JSON is unsigned field-element data; signed values would not decode back.
+      if (o < _0n) throw new Error(`expected non-negative bigint, got ${o}`);
+      return o.toString(10);
+    }) as BigintToString<F>;
   },
   decode: <T>(o: T): StringToBigint<T> => {
+    // Only unsigned base-10 strings are decoded for old proof/key JSON compatibility.
     return deepConvert(o, (o) =>
       typeof o == 'string' && /^[0-9]+$/.test(o) ? BigInt(o) : undefined
     ) as StringToBigint<T>;
   },
-};
+});
 
 function pointCoder<T, F>(
   cons: WeierstrassPointCons<T>,
   coder: Coder<T, F>
 ): Coder<WeierstrassPoint<T>, [F, F, F]> {
-  return {
-    encode: (p): [F, F, F] => {
+  return Object.freeze({
+    encode: (p: WeierstrassPoint<T>): [F, F, F] => {
       const { X: px, Y: py, Z: pz } = cons.fromAffine(p.toAffine());
       return [px, py, pz].map(coder.encode) as [F, F, F];
     },
-    decode: (p) => {
+    decode: (p: [F, F, F] | undefined) => {
+      // snarkjs-style proving keys use null placeholders for zero C-query entries.
       if (!p) return cons.ZERO; // sometimes can be null?
       const [x, y, z] = p.map(coder.decode);
       // TODO: validation increases time 3x
       // res.assertValidity();
       return new cons(x, y, z);
     },
-  };
+  });
 }
 
 /** One linear constraint side keyed by signal index. */
@@ -290,7 +308,7 @@ export interface SnarkConstructorOutput {
      */
     setup(
       circuit: CircuitInfo,
-      rnd?: RandFn
+      rnd?: TArg<RandFn>
     ): {
       pkey: ProvingKey;
       vkey: VerificationKey;
@@ -303,7 +321,7 @@ export interface SnarkConstructorOutput {
      * @param rnd - Optional randomness source.
      * @returns Proof and public signals.
      */
-    createProof(pkey: ProvingKey, witness: Witness, rnd?: RandFn): Promise<ProofWithSignals>;
+    createProof(pkey: ProvingKey, witness: Witness, rnd?: TArg<RandFn>): Promise<ProofWithSignals>;
     /**
      * Verifies a Groth16 proof.
      * @param vkey - Verification key.
@@ -319,6 +337,7 @@ export interface SnarkConstructorOutput {
  * @param curve - Pairing-friendly curve implementation.
  * @param opts - Options for FFT setup and optional MSM backends. See {@link GrothOpts}.
  * @returns Snark setup, proof, and verification helpers.
+ * @throws If the curve root table exceeds the supported FFT domain size. {@link Error}
  * @example
  * Build curve-specific Groth16 helpers, then run a tiny self-contained proof round-trip.
  * ```ts
@@ -336,7 +355,10 @@ export interface SnarkConstructorOutput {
  * snark.groth.verifyProof(setup.vkey, proof);
  * ```
  */
-export function buildSnark(curve: BLSCurvePair, opts: GrothOpts = {}): SnarkConstructorOutput {
+export function buildSnark(
+  curve: BLSCurvePair,
+  opts: GrothOpts = {}
+): TRet<SnarkConstructorOutput> {
   // Utils
   const G1 = curve.G1.Point;
   const G2 = curve.G2.Point;
@@ -362,12 +384,22 @@ export function buildSnark(curve: BLSCurvePair, opts: GrothOpts = {}): SnarkCons
     ? (p: G2Point[], s: bigint[]) => pippenger(curve.G2.Point, p, s)
     : modifyArgs(Fr, G2, opts.G2msm);
 
-  const Frandom = (rnd: RandFn = randomBytes) => {
-    return bytesToNumberBE(rnd(Fr.BYTES));
+  const Frandom = (rnd: TArg<RandFn> = randomBytes) => {
+    // Reduce random bytes once so unsafePreserveToxic exposes the same field elements setup uses.
+    return Fr.create(bytesToNumberBE(rnd(Fr.BYTES)));
   };
   const roots = rootsOfUnity(Fr, opts.nqr ? BigInt(opts.nqr) : undefined);
+  // Some internal FFT paths still use signed JS shifts; reject roots that could reach bit 31+.
+  if (roots.info.powerOfTwo > MAX_DOMAIN_BITS)
+    throw new Error(
+      `expected roots powerOfTwo <= ${MAX_DOMAIN_BITS}, got ${roots.info.powerOfTwo}`
+    );
   const fftFr = FFT(roots, Fr);
   const polyFr = polyCurves(Fr, roots, undefined, fftFr);
+  const checkDomainBits = (bits: number) => {
+    if (!Number.isSafeInteger(bits) || bits < 0 || bits > roots.info.powerOfTwo)
+      throw new Error(`expected domainBits <= ${roots.info.powerOfTwo}, got ${bits}`);
+  };
   // TODO: cleanup more later
   const poly = {
     reduce(p: bigint[]) {
@@ -408,6 +440,7 @@ export function buildSnark(curve: BLSCurvePair, opts: GrothOpts = {}): SnarkCons
       const res = new Array(size).fill(Fr.ZERO);
       for (let s = 0; s < weights.length; s++) {
         for (let c in constraints[s]) {
+          // Setup stores sparse matrices by signal, while proving uses row-major proving-key matrices.
           const idx = transpose ? s : +c;
           res[idx] = Fr.add(
             res[idx],
@@ -423,6 +456,7 @@ export function buildSnark(curve: BLSCurvePair, opts: GrothOpts = {}): SnarkCons
   function calculateH(proof: ProvingKey, witness: Witness) {
     const m = proof.domainSize;
     const bits = log2(m);
+    checkDomainBits(bits);
     // new snarkjs omit polsC and re-construct them via coset stuff & shifts.
     if (proof.ccoefs) {
       const pols = [];
@@ -448,19 +482,20 @@ export function buildSnark(curve: BLSCurvePair, opts: GrothOpts = {}): SnarkCons
     }
     throw new Error('wrong proving key: no polynomials');
   }
-  const utils = { G1, G2, G1c, G2c } satisfies PointsWithCoders;
+  const utils = Object.freeze({ G1, G2, G1c, G2c } satisfies PointsWithCoders);
   // TODO: add other proofs, which re-use many polynomial operations
   // * We don't export alfabeta_12! It is only used for optimization, and is specific to
   //   pairing implementation (different values after final exponentiation).
   // * We accept raw circuit json here, no need for Circuit object!
-  return {
+  return Object.freeze({
     utils: utils,
-    groth: {
-      setup(circuit: CircuitInfo, rnd: RandFn = randomBytes) {
+    groth: Object.freeze({
+      setup(circuit: CircuitInfo, rnd: TArg<RandFn> = randomBytes) {
         // Sizes
         const nConstraints = circuit.constraints.length;
         const domainBits = log2(nConstraints + circuit.nPubInputs + circuit.nOutputs + 1 - 1) + 1;
-        const domainSize = 1 << domainBits;
+        checkDomainBits(domainBits);
+        const domainSize = 2 ** domainBits;
         const nPublic = circuit.nPubInputs + circuit.nOutputs;
         const maxH = domainSize + 1;
         // Toxic
@@ -471,6 +506,9 @@ export function buildSnark(curve: BLSCurvePair, opts: GrothOpts = {}): SnarkCons
           kgamma: Frandom(rnd),
           kdelta: Frandom(rnd),
         };
+        // Zero toxic scalars make degenerate setup data and currently hit inverse paths for gamma/delta.
+        for (const [k, v] of Object.entries(toxic))
+          if (Fr.is0(v)) throw new Error(`expected non-zero toxic ${k}`);
         // G1
         const alfaP1 = G1c.encode(G1.BASE.multiplyUnsafe(Fr.create(toxic.kalfa)));
         const betaP1 = G1c.encode(G1.BASE.multiplyUnsafe(Fr.create(toxic.kbeta)));
@@ -494,7 +532,7 @@ export function buildSnark(curve: BLSCurvePair, opts: GrothOpts = {}): SnarkCons
         for (let i = 0; i < circuit.nPubInputs + circuit.nOutputs + 1; i++)
           polsA[i][nConstraints + i] = Fr.ONE;
         // Evaluate
-        const zt = Fr.sub(Fr.pow(toxic.t, BigInt(1 << domainBits)), Fr.ONE);
+        const zt = Fr.sub(Fr.pow(toxic.t, BigInt(domainSize)), Fr.ONE);
         const u = poly.evaluateLagrangePolynomials(domainBits, toxic.t);
         const { pA, pB, pC } = sumABC(circuit.nVars, u, polsA, polsB, polsC, true);
         // C
@@ -580,12 +618,12 @@ export function buildSnark(curve: BLSCurvePair, opts: GrothOpts = {}): SnarkCons
       async createProof(
         pkey: ProvingKey,
         witness: Witness,
-        rnd: RandFn = randomBytes
+        rnd: TArg<RandFn> = randomBytes
       ): Promise<ProofWithSignals> {
         witness = witness.map((i) => Fr.create(i));
         // Blinding salt for zero-knowledge
-        const r = Fr.create(Frandom(rnd));
-        const s = Fr.create(Frandom(rnd));
+        const r = Frandom(rnd);
+        const s = Frandom(rnd);
         const A = pkey.A.map(G1c.decode);
         const B1 = pkey.B1.map(G1c.decode);
         const B2 = pkey.B2.map(G2c.decode);
@@ -628,7 +666,7 @@ export function buildSnark(curve: BLSCurvePair, opts: GrothOpts = {}): SnarkCons
       },
       verifyProof(vkey: VerificationKey, proofWithSignals: ProofWithSignals): boolean {
         const { proof, publicSignals, commitments } = proofWithSignals;
-        let cpub = pippenger(G1, vkey.IC.map(G1c.decode), [1n, ...publicSignals]);
+        let cpub = pippenger(G1, vkey.IC.map(G1c.decode), [_1n, ...publicSignals]);
         if (commitments) {
           commitments.forEach((cm) => {
             cpub = cpub.add(G1c.decode(cm));
@@ -647,8 +685,8 @@ export function buildSnark(curve: BLSCurvePair, opts: GrothOpts = {}): SnarkCons
         ]);
         return Fp12.eql(newRes, Fp12.ONE);
       },
-    },
-  };
+    }),
+  }) as TRet<SnarkConstructorOutput>;
 }
 
 /**
@@ -668,6 +706,6 @@ export function buildSnark(curve: BLSCurvePair, opts: GrothOpts = {}): SnarkCons
  * bn254.groth.verifyProof(setup.vkey, proof);
  * ```
  */
-export const bn254: SnarkConstructorOutput = /* @__PURE__ */ buildSnark(nobleBn254, {});
+export const bn254: TRet<SnarkConstructorOutput> = /* @__PURE__ */ buildSnark(nobleBn254, {});
 // NOTE: this is unsafe and may not work (untested for now)
 //export const bls12_381 = buildSnark(nobleBls12, {});

@@ -1,7 +1,8 @@
 import { bn254 } from '@noble/curves/bn254.js';
+import { bls12_381 } from '@noble/curves/bls12-381.js';
 import { keccakprg } from '@noble/hashes/sha3-addons.js';
 import { describe, should } from '@paulmillr/jsbt/test.js';
-import { deepStrictEqual } from 'node:assert';
+import { deepStrictEqual, rejects, throws } from 'node:assert';
 import * as zkp from '../index.js';
 import { stringBigints } from '../index.js';
 import { generateWitness } from '../witness.js';
@@ -18,6 +19,7 @@ const prg = (seed) => {
 };
 
 const groth16 = zkp.buildSnark(bn254, { unsafePreserveToxic: true }).groth;
+const smallCircuit = { nVars: 2, nPubInputs: 0, nOutputs: 0, constraints: [[{}, {}, {}]] };
 
 describe('noble', () => {
   describe('bn254', () => {
@@ -90,6 +92,42 @@ describe('noble', () => {
         const witness = generateWitness(circuitSum)({ a: '33', b: '34' });
         const proof = await groth16.createProof(setup.pkey, witness, randomBytes);
         deepStrictEqual(groth16.verifyProof(setup.vkey, proof), true);
+      });
+      should('toxic waste', () => {
+        const allFF = (len) => new Uint8Array(len).fill(0xff);
+        const { toxic } = groth16.setup(smallCircuit, allFF);
+        deepStrictEqual(
+          Object.fromEntries(Object.entries(toxic).map(([k, v]) => [k, v < bn254.fields.Fr.ORDER])),
+          { t: true, kalfa: true, kbeta: true, kgamma: true, kdelta: true }
+        );
+        const zero = (len) => new Uint8Array(len);
+        throws(() => groth16.setup(smallCircuit, zero), /expected non-zero toxic/);
+      });
+      should('domain bounds', async () => {
+        const randomBytes = (len) => new Uint8Array(len).fill(1);
+        const badCircuit = (len) => ({
+          ...circuitSum,
+          nVars: 1,
+          nPubInputs: 0,
+          nOutputs: 0,
+          constraints: { length: len },
+        });
+        for (const len of [2 ** 28, 2 ** 30])
+          throws(() => groth16.setup(badCircuit(len), randomBytes), /expected domainBits <=/);
+        for (const len of [2 ** 32, 2 ** 40])
+          throws(
+            () => groth16.setup(badCircuit(len), randomBytes),
+            /expected uint32 positive integer/
+          );
+        const setup = groth16.setup(circuitSum, randomBytes);
+        const witness = generateWitness(circuitSum)({ a: '33', b: '34' });
+        await rejects(
+          () => groth16.createProof({ ...setup.pkey, domainSize: 2 ** 32 }, witness, randomBytes),
+          /expected uint32 positive integer/
+        );
+      });
+      should('unsupported root capacity', () => {
+        throws(() => zkp.buildSnark(bls12_381), /expected roots powerOfTwo <= 30/);
       });
     });
   });

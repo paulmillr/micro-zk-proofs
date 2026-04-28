@@ -2,12 +2,13 @@ import { hexToBytes } from '@noble/curves/utils.js';
 import { bn254 } from '@noble/curves/bn254.js';
 import { keccakprg } from '@noble/hashes/sha3-addons.js';
 import { describe, should } from '@paulmillr/jsbt/test.js';
-import { deepStrictEqual } from 'node:assert';
+import { deepStrictEqual, throws } from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { dirname, join as joinPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zkp from '../index.js';
 import * as witness from '../witness.js';
+import sumCircuit from './vectors/sum-circuit.json' with { type: 'json' };
 import sumConstraints from './vectors/sum_test_constraints.json' with { type: 'json' };
 import { utf8ToBytes } from '@noble/hashes/utils.js';
 const DATA_1 =
@@ -25,9 +26,65 @@ const prg = (seed) => {
   return randomBytes;
 };
 
+const bigintPatchNames = [
+  'eq',
+  'neq',
+  'greaterOrEquals',
+  'greater',
+  'gt',
+  'lesserOrEquals',
+  'lesser',
+  'lt',
+  'sub',
+  'add',
+  'mul',
+  'div',
+  'mod',
+  'inverse',
+  'modPow',
+  'and',
+  'shr',
+];
+const bigintProto = BigInt.prototype;
+const snapBigInt = () =>
+  bigintPatchNames.map((name) => [name, Object.getOwnPropertyDescriptor(bigintProto, name)]);
+const restoreBigInt = (state) => {
+  for (const [name, desc] of state) {
+    if (!desc) delete bigintProto[name];
+    else Object.defineProperty(bigintProto, name, desc);
+  }
+};
+
 //const groth16 = zkp.buildSnark(bn254, { unsafePreserveToxic: true }).groth;
 
 describe('Witness', () => {
+  should('generateWitness restores BigInt prototype patches', () => {
+    const before = snapBigInt();
+    const preserved = function preservedAdd() {};
+    try {
+      const gen = witness.generateWitness(sumCircuit);
+      for (const value of [preserved, undefined, { get: () => undefined, configurable: true }]) {
+        if (typeof value === 'object') Object.defineProperty(bigintProto, 'add', value);
+        else bigintProto.add = value;
+        const expected = snapBigInt();
+        gen({ a: '33', b: '34' });
+        deepStrictEqual(snapBigInt(), expected);
+        throws(() => gen({ a: '33' }), /Input Signal not assigned:/);
+        deepStrictEqual(snapBigInt(), expected);
+      }
+    } finally {
+      restoreBigInt(before);
+    }
+  });
+  should('generateWitness reads own input fields only', () => {
+    const gen = witness.generateWitness(sumCircuit);
+    const expected = [1n, 67n, 34n, 33n];
+    deepStrictEqual(gen({ a: '33', b: '34' }).slice(0, 4), expected);
+    const inheritedExtra = Object.assign(Object.create({ extra: '99' }), { a: '33', b: '34' });
+    deepStrictEqual(gen(inheritedExtra).slice(0, 4), expected);
+    const inheritedRequired = Object.assign(Object.create({ b: '34' }), { a: '33' });
+    throws(() => gen(inheritedRequired), /Input Signal not assigned:/);
+  });
   should('R1CS', () => {
     const data = Uint8Array.from(readFileSync(joinPath(_dirname, './vectors/sum_test.r1cs')));
     const coder = witness.getCoders(bn254).R1CS; // We need to pass fields because it depends on bytesize of order
@@ -57,6 +114,18 @@ describe('Witness', () => {
     "nSignals": 101
     */
     deepStrictEqual(decoded.sections[0].data, zkp.stringBigints.decode(sumConstraints).constraints);
+    deepStrictEqual(coder.encode(decoded), data);
+    const invalidKeyR1CS = (key) => ({
+      magic: undefined,
+      version: 1,
+      sections: [
+        decoded.sections[1],
+        { TAG: 'constraint', data: [[{ [key]: 1n }, {}, {}]] },
+        { TAG: 'wire2label', data: [0n, 1n] },
+      ],
+    });
+    for (const key of ['', '01', '1.0', '0x10', ' 1', '1e2', '4294967296'])
+      throws(() => coder.encode(invalidKeyR1CS(key)), /expected uint32 constraint key/);
   });
   should('binary witness', () => {
     const data = hexToBytes(DATA_1);
@@ -91,6 +160,34 @@ describe('Witness', () => {
         },
       ],
     });
+  });
+  should('section length encoders', () => {
+    const { R1CS, WTNS, ZKeyRaw } = witness.getCoders(bn254);
+    const wtns = hexToBytes(DATA_2);
+    deepStrictEqual(WTNS.encode(WTNS.decode(wtns)), wtns);
+    const zkey = Uint8Array.from(readFileSync(joinPath(_dirname, './vectors/keys/zkey0.zkey')));
+    deepStrictEqual(ZKeyRaw.encode(ZKeyRaw.decode(zkey)), zkey);
+    const emptyR1CS = {
+      magic: undefined,
+      version: 1,
+      sections: [
+        {
+          TAG: 'header',
+          data: {
+            prime: bn254.fields.Fr.ORDER,
+            nWires: 1,
+            nPubOut: 0,
+            nPubIn: 0,
+            nPrvIn: 0,
+            nLables: 1n,
+            mConstraints: 0,
+          },
+        },
+        { TAG: 'constraint', data: [] },
+        { TAG: 'wire2label', data: [0n] },
+      ],
+    };
+    deepStrictEqual(R1CS.decode(R1CS.encode(emptyR1CS)), emptyR1CS);
   });
   should('ZKey', () => {
     // NOTE: keys extracted from deterministic tests in snarkjs v0.7.5 (fullproccess.js)
