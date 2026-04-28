@@ -322,10 +322,10 @@ const witnessJs = zkpWitness.generateWitness(sumCircuit)(input);
 
 Benchmarks measured on Apple M4:
 
-- Proof generation, no workers: 149ms
-- Proof verification, no workers: 24ms
-- Proof generation, with workers: 48ms
-- Proof verification, with workers: 24ms
+- Proof generation, no workers: 165ms
+- Proof verification, no workers: 53ms
+- Proof generation, with workers: 60ms
+- Proof verification, with workers: 26ms
 
 ## License
 
