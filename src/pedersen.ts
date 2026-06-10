@@ -10,7 +10,7 @@ import { type EdwardsPoint as ExtPointType } from '@noble/curves/abstract/edward
 import { asciiToBytes } from '@noble/curves/utils.js';
 import { babyjubjub } from '@noble/curves/misc.js';
 import { blake256 } from '@noble/hashes/blake1.js';
-import type { TArg, TRet } from '@noble/hashes/utils.js';
+import { abytes, type TArg, type TRet } from '@noble/hashes/utils.js';
 
 const Fp = babyjubjub.Point.Fp;
 const _0n = /* @__PURE__ */ BigInt(0);
@@ -37,6 +37,8 @@ type PointCodec = {
  */
 export const Point: TRet<PointCodec> = Object.freeze({
   encode: (p: any): TRet<Uint8Array> => {
+    if (!p || typeof p.toAffine !== 'function')
+      throw new TypeError('"p" expected point with toAffine(), got type=' + typeof p);
     const { x, y } = p.toAffine();
     const bytes = Fp.toBytes(y);
     // Check highest bit instead of lowest in other twisted edwards
@@ -48,6 +50,7 @@ export const Point: TRet<PointCodec> = Object.freeze({
   // However it uses exactly same tonneli shanks as @noble/curves, but selects lower root
   // This is very fragile, but probably since used for hashes only
   decode: (bytes: TArg<Uint8Array>): TRet<ExtPointType> => {
+    bytes = abytes(bytes, undefined, 'bytes');
     const sign = !!(bytes[31] & 0x80);
     // Clone before clearing the sign bit; callers may pass Buffer, whose slice aliases memory.
     bytes = Uint8Array.from(bytes);
@@ -129,6 +132,7 @@ function getScalars(msg: TArg<Uint8Array>) {
  * ```
  */
 export function pedersenHash(msg: TArg<Uint8Array>): TRet<Uint8Array> {
+  msg = abytes(msg, undefined, 'msg');
   const p = getScalars(msg).reduce(
     (acc, i, j) => acc.add(basePoint(j).multiply(i)),
     babyjubjub.Point.ZERO

@@ -7,9 +7,11 @@
  * @module
  */
 
+import type { BlsCurvePair as BLSCurvePair } from '@noble/curves/abstract/bls.js';
 import { invert, pow, type IField } from '@noble/curves/abstract/modular.js';
 import { bn254 as nobleBn254 } from '@noble/curves/bn254.js';
 import { bitMask } from '@noble/curves/utils.js';
+import { abytes, type TArg, type TRet } from '@noble/hashes/utils.js';
 import * as P from 'micro-packed';
 import {
   type CircuitInfo,
@@ -19,8 +21,18 @@ import {
   type ProvingKey,
   type VerificationKey,
 } from './index.ts';
-import type { BlsCurvePair as BLSCurvePair } from '@noble/curves/abstract/bls.js';
-import type { TArg, TRet } from '@noble/hashes/utils.js';
+
+/**
+ * Checks if the provided value is object-like for option/schema bags.
+ * This intentionally matches noble-curves and noble-hashes by using the
+ * `[object Object]` tag instead of rejecting class/proxy/env objects by prototype;
+ * stricter checks caused compatibility reports in proxied environments.
+ * Array, Uint8Array and others are not plain objects.
+ * @param obj - The value to be checked.
+ */
+function isPlainObject(obj: any): boolean {
+  return Object.prototype.toString.call(obj) === '[object Object]';
+}
 
 function monkeyPatchBigInt() {
   const methods = {
@@ -124,6 +136,22 @@ type Scope = Record<string, any>;
  * ```
  */
 export function generateWitness(circJson: any): (input: any) => any {
+  if (!isPlainObject(circJson))
+    throw new TypeError('"circJson" expected object, got type=' + typeof circJson);
+  if (!Array.isArray(circJson.signals))
+    throw new TypeError('"circJson.signals" expected array, got type=' + typeof circJson.signals);
+  if (!Array.isArray(circJson.components))
+    throw new TypeError(
+      '"circJson.components" expected array, got type=' + typeof circJson.components
+    );
+  if (!isPlainObject(circJson.templates))
+    throw new TypeError(
+      '"circJson.templates" expected object, got type=' + typeof circJson.templates
+    );
+  if (!isPlainObject(circJson.functions))
+    throw new TypeError(
+      '"circJson.functions" expected object, got type=' + typeof circJson.functions
+    );
   const P = nobleBn254.fields.Fr.ORDER;
   const MASK = bitMask(nobleBn254.fields.Fr.BITS);
 
@@ -385,6 +413,12 @@ type CodersOutput = {
  * ```
  */
 export const getCoders = (curve: BLSCurvePair): TRet<CodersOutput> => {
+  if (!isPlainObject(curve))
+    throw new TypeError('"curve" expected curve object, got type=' + typeof curve);
+  if (!isPlainObject(curve.fields))
+    throw new TypeError('"curve.fields" expected object, got type=' + typeof curve.fields);
+  if (!isPlainObject(curve.fields.Fr))
+    throw new TypeError('"curve.fields.Fr" expected object, got type=' + typeof curve.fields.Fr);
   const field = curve.fields.Fr;
   // NOTE: we need to pass field here, even if bigints are variable size, they are fixed to field bytes!
   const fieldBytes = field.BYTES;
@@ -513,6 +547,7 @@ export const getCoders = (curve: BLSCurvePair): TRet<CodersOutput> => {
   });
 
   const getCircuitInfo = (bytes: TArg<Uint8Array>): CircuitInfo => {
+    bytes = abytes(bytes, undefined, 'bytes');
     const data = R1CS.decode(bytes);
     const constraints = data.sections.find((i) => i.TAG === 'constraint');
     if (!constraints) throw new Error('R1CS: cannot find constraints');
@@ -527,6 +562,7 @@ export const getCoders = (curve: BLSCurvePair): TRet<CodersOutput> => {
     };
   };
   function parseZKey(zkey: TArg<Uint8Array>) {
+    zkey = abytes(zkey, undefined, 'zkey');
     const { Fr, Fp } = curve.fields;
     // Montgomery encoding of field elements
     const fieldFromMont = (f: IField<bigint>, is1: boolean) => {

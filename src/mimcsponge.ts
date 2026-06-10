@@ -8,7 +8,7 @@
 
 import { bn254 } from '@noble/curves/bn254.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { utf8ToBytes } from '@noble/hashes/utils.js';
+import { anumber, utf8ToBytes } from '@noble/hashes/utils.js';
 
 const Fr = bn254.fields.Fr;
 const SEED = 'mimcsponge';
@@ -25,6 +25,8 @@ const NROUNDS = 220;
  * ```
  */
 export function getIV(seed: string = SEED): bigint {
+  if (typeof seed !== 'string')
+    throw new TypeError('"seed" expected string, got type=' + typeof seed);
   return Fr.create(Fr.fromBytes(keccak_256(utf8ToBytes(`${seed}_iv`)), true));
 }
 
@@ -41,9 +43,12 @@ export function getIV(seed: string = SEED): bigint {
  * ```
  */
 export function getConstants(seed: string = SEED, nRounds: number = NROUNDS): bigint[] {
+  if (typeof seed !== 'string')
+    throw new TypeError('"seed" expected string, got type=' + typeof seed);
   // Circomlib-compatible tables reserve first and last constants as zero endpoints.
-  if (!Number.isSafeInteger(nRounds) || nRounds < 2)
-    throw new Error(`expected nRounds >= 2, got ${nRounds}`);
+  anumber(nRounds, 'nRounds');
+  // Preserve the historical phrase; tests and callers match this error text.
+  if (nRounds < 2) throw new RangeError(`expected nRounds >= 2, got ${nRounds}`);
   const cts = [BigInt(0)];
   let c = keccak_256(utf8ToBytes(seed));
   for (let i = 0; i < nRounds - 2; i++)
@@ -92,8 +97,18 @@ export function hash(L: bigint, R: bigint, k: bigint): { xL: bigint; xR: bigint 
  * ```
  */
 export function multiHash(lst: bigint[], key: bigint = Fr.ZERO, numOutputs = 1): bigint | bigint[] {
-  if (!Number.isSafeInteger(numOutputs) || numOutputs < 1)
-    throw new Error(`expected numOutputs >= 1, got ${numOutputs}`);
+  if (!Array.isArray(lst)) throw new TypeError('"lst" expected array, got type=' + typeof lst);
+  for (let i = 0; i < lst.length; i++) {
+    const item = lst[i];
+    if (typeof item !== 'bigint')
+      throw new TypeError(`"lst.${i}" expected bigint, got type=${typeof item}`);
+  }
+  if (typeof key !== 'bigint')
+    throw new TypeError('"key" expected bigint, got type=' + typeof key);
+  anumber(numOutputs, 'numOutputs');
+  // Preserve the historical phrase; tests and callers match this error text.
+  if (numOutputs < 1)
+    throw new RangeError(`expected numOutputs >= 1, got ${numOutputs}`);
   let R = Fr.ZERO;
   let C = Fr.ZERO;
   for (let i = 0; i < lst.length; i++)
