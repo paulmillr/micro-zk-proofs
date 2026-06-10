@@ -196,6 +196,15 @@ export function generateWitness(circJson: any): (input: any) => any {
     let currentComponent: string | undefined;
     let scopes: Scope[] = []; // scope stack
     const notInitSignals = {} as any;
+    // Queue of component indices ready to be triggered. Using a queue instead of
+    // direct recursion prevents stack overflow on deep inter-template chains (e.g.
+    // MontgomeryAdd in complex circuits).
+    const pendingComponents: any[] = [];
+    // Tracks how many triggerComponent frames are currently on the call stack.
+    // Used in setSignalFullName to decide whether a newly-ready component is a
+    // direct sub-component (safe to trigger synchronously) or an independent chain
+    // (must be deferred to pendingComponents).
+    let triggerDepth = 0;
 
     function inScope(newScope: Scope, cb: Function) {
       const oldScope = scopes;
@@ -212,8 +221,21 @@ export function generateWitness(circJson: any): (input: any) => any {
       const template = components[c].template;
       const newScope: any = {};
       for (let p in components[c].params) newScope[p] = components[c].params[p];
+      // Track depth so setSignalFullName can distinguish sub-component triggers
+      // (safe to recurse) from independent-chain triggers (must be deferred).
+      triggerDepth++;
       inScope(newScope, () => templates[template](ctx));
+      triggerDepth--;
       currentComponent = oldComponent;
+    }
+    // Process all deferred components until none remain. The notInitSignals guard
+    // (>= 0) skips duplicates: triggerComponent decrements to -1 on first call, so
+    // any component pushed twice will be a no-op on the second dequeue.
+    function drainPendingComponents() {
+      while (pendingComponents.length > 0) {
+        const c = pendingComponents.shift();
+        if (notInitSignals[c] >= 0) triggerComponent(c);
+      }
     }
     function setSignalFullName(fullName: any, value: any) {
       const sId = getSignalIdx(fullName);
@@ -227,8 +249,23 @@ export function generateWitness(circJson: any): (input: any) => any {
         callComponents.push(idCmp);
       }
       callComponents.map((c) => {
-        if (notInitSignals[c] == 0) triggerComponent(c);
+        if (notInitSignals[c] == 0) {
+          // Only trigger synchronously when we are inside a template AND the newly-ready
+          // component is a direct child of the current one (setPin→getPin sub-component
+          // pattern). All other ready components are deferred to the queue to avoid
+          // unbounded recursion across independent inter-template chains.
+          const isSubcomponent =
+            triggerDepth > 0 && components[c].name.startsWith(currentComponent + '.');
+          if (isSubcomponent) {
+            triggerComponent(c);
+          } else {
+            pendingComponents.push(c);
+          }
+        }
       });
+      // Drain at the top level (i.e. from input processing, not from within a template).
+      // Mirrors the drainPendingComponents() call after the input loop in snarkjs.
+      if (triggerDepth === 0) drainPendingComponents();
       return witness[sId];
     }
     function getSignalFullName(name: string) {
@@ -299,7 +336,11 @@ export function generateWitness(circJson: any): (input: any) => any {
       // Processing
       for (const c in components) notInitSignals[c] = components[c].inputSignals;
       ctx.setSignal('one', [], BigInt(1));
-      for (let c in notInitSignals) if (notInitSignals[c] == 0) triggerComponent(c);
+      // Queue all components that are already fully initialised (zero remaining inputs)
+      // and drain the queue iteratively rather than triggering them inline. This avoids
+      // a call-stack overflow when complex circuits have long inter-template chains.
+      for (let c in notInitSignals) if (notInitSignals[c] == 0) pendingComponents.push(c);
+      drainPendingComponents();
       // Circuit JSON inputs are own fields; prototypes may carry unrelated app metadata.
       for (const s of Object.keys(input)) {
         currentComponent = 'main';
