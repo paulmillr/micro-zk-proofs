@@ -3,11 +3,13 @@ import { bn254 } from '@noble/curves/bn254.js';
 import { keccakprg } from '@noble/hashes/sha3-addons.js';
 import { describe, should } from '@paulmillr/jsbt/test.js';
 import { deepStrictEqual, throws } from 'node:assert';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join as joinPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zkp from '../index.js';
 import * as witness from '../witness.js';
+import { buildDeepChainCircuit } from './helpers/chain-circuit.js';
 import sumCircuit from './vectors/sum-circuit.json' with { type: 'json' };
 import sumConstraints from './vectors/sum_test_constraints.json' with { type: 'json' };
 import { utf8ToBytes } from '@noble/hashes/utils.js';
@@ -296,6 +298,34 @@ describe('Witness', () => {
     });
     console.log('PROOF', JSON.stringify(zkp.stringBigints.encode(proof)));
     deepStrictEqual(groth16.verifyProof(vkey, proof), true);
+  });
+
+  // ── deep relay-chain tests ────────────────────────────────────────────────────
+  // These tests exercise the queue-based component-drain introduced to prevent
+  // call-stack overflow on circuits with long inter-template chains.
+
+  should('deep relay chain: correct output for small N', () => {
+    // Functional sanity check: a 10-component relay chain passes the input value
+    // through unchanged.  result[1] is the main.out slot.
+    const gen = witness.generateWitness(buildDeepChainCircuit(10));
+    deepStrictEqual(gen({ in: '42' })[1], 42n);
+  });
+
+  should('deep relay chain: no stack overflow under reduced stack size (N=1000, stack=256kB)', () => {
+    // Spawn a subprocess with --stack-size=256 (256 kB).  Under the old synchronous-
+    // recursion approach 1000 triggerComponent frames would exceed that budget and
+    // crash with "Maximum call stack size exceeded".  The queue-based drain must
+    // process all components iteratively and exit 0.
+    const result = spawnSync(
+      process.execPath,
+      ['--stack-size=256', joinPath(_dirname, 'helpers', 'deep-chain-runner.js')],
+      { timeout: 30_000, encoding: 'utf8' }
+    );
+    deepStrictEqual(
+      result.status,
+      0,
+      `Subprocess crashed (status ${result.status}):\n${result.stderr}`
+    );
   });
 });
 
