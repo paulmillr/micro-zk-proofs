@@ -1,16 +1,18 @@
-import { hexToBytes } from '@noble/curves/utils.js';
 import { bn254 } from '@noble/curves/bn254.js';
+import { hexToBytes } from '@noble/curves/utils.js';
 import { keccakprg } from '@noble/hashes/sha3-addons.js';
+import { utf8ToBytes } from '@noble/hashes/utils.js';
 import { describe, should } from '@paulmillr/jsbt/test.js';
 import { deepStrictEqual, throws } from 'node:assert';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join as joinPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zkp from '../index.js';
 import * as witness from '../witness.js';
+import { buildDeepChainCircuit, buildDuplicateTriggerCircuit } from './helpers/chain-circuit.js';
 import sumCircuit from './vectors/sum-circuit.json' with { type: 'json' };
 import sumConstraints from './vectors/sum_test_constraints.json' with { type: 'json' };
-import { utf8ToBytes } from '@noble/hashes/utils.js';
 const DATA_1 =
   '01000000000000000000000000000000000000000000000000000000000000004300000000000000000000000000000000000000000000000000000000000000210000000000000000000000000000000000000000000000000000000000000022000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000';
 
@@ -43,6 +45,7 @@ const bigintPatchNames = [
   'inverse',
   'modPow',
   'and',
+  'shl',
   'shr',
 ];
 const bigintProto = BigInt.prototype;
@@ -53,6 +56,656 @@ const restoreBigInt = (state) => {
     if (!desc) delete bigintProto[name];
     else Object.defineProperty(bigintProto, name, desc);
   }
+};
+
+const siblingCircuit = {
+  nVars: 6,
+  nInputs: 1,
+  nOutputs: 1,
+  nSignals: 6,
+  templates: {
+    Main: `function(ctx) {
+      ctx.setPin("a", [], "in", [], ctx.getSignal("in", []));
+      ctx.setSignal("out", [], ctx.getPin("b", [], "out", []));
+    }`,
+    A: `function(ctx) {
+      ctx.setSignal("out", [], bigInt(ctx.getSignal("in", [])).add(bigInt(1)).mod(__P__));
+    }`,
+    B: `function(ctx) {
+      ctx.setSignal("out", [], bigInt(ctx.getSignal("in", [])).add(bigInt(1)).mod(__P__));
+    }`,
+  },
+  functions: {},
+  components: [
+    { name: 'main', params: {}, template: 'Main', inputSignals: 1 },
+    { name: 'main.a', params: {}, template: 'A', inputSignals: 1 },
+    { name: 'main.b', params: {}, template: 'B', inputSignals: 1 },
+  ],
+  signals: [
+    { names: ['one'], triggerComponents: [] },
+    { names: ['main.out'], triggerComponents: [] },
+    { names: ['main.in'], triggerComponents: [0] },
+    { names: ['main.a.in'], triggerComponents: [1] },
+    { names: ['main.a.out', 'main.b.in'], triggerComponents: [2] },
+    { names: ['main.b.out'], triggerComponents: [] },
+  ],
+  signalName2Idx: {
+    one: 0,
+    'main.out': 1,
+    'main.in': 2,
+    'main.a.in': 3,
+    'main.a.out': 4,
+    'main.b.in': 4,
+    'main.b.out': 5,
+  },
+};
+
+/*
+Generated by circom 0.0.35 from:
+
+template A() {
+    signal input in;
+    signal output out;
+    signal output back;
+    signal output final;
+
+    out <== in + 1;
+    final <== back;
+}
+
+template B() {
+    signal input in;
+    signal output out;
+
+    out <== in + 1;
+}
+
+template Main() {
+    signal input in;
+    signal output out;
+
+    component a = A();
+    component b = B();
+
+    a.in <== in;
+    a.out ==> b.in;
+    b.out ==> a.back;
+    a.final ==> out;
+}
+
+component main = Main();
+
+main.a.out aliases main.b.in, so A makes B ready while A is still running.
+Old recursion runs B before A reads back; a deferred queue must demand-drain
+when A reads the uninitialized back signal.
+*/
+const generatedOutputBackedgeCircuit = {
+  nVars: 3,
+  nInputs: 1,
+  nOutputs: 1,
+  nSignals: 4,
+  templates: {
+    A: `function(ctx) {
+    ctx.setSignal("out", [], bigInt(ctx.getSignal("in", [])).add(bigInt("1")).mod(__P__));
+    ctx.setSignal("final", [], ctx.getSignal("back", []));
+}
+`,
+    B: `function(ctx) {
+    ctx.setSignal("out", [], bigInt(ctx.getSignal("in", [])).add(bigInt("1")).mod(__P__));
+}
+`,
+    Main: `function(ctx) {
+    ctx.setPin("a", [], "in", [], ctx.getSignal("in", []));
+    ctx.setPin("b", [], "in", [], ctx.getPin("a", [], "out", []));
+    ctx.setPin("a", [], "back", [], ctx.getPin("b", [], "out", []));
+    ctx.setSignal("out", [], ctx.getPin("a", [], "final", []));
+}
+`,
+  },
+  functions: {},
+  components: [
+    { name: 'main', params: {}, template: 'Main', inputSignals: 1 },
+    { name: 'main.a', params: {}, template: 'A', inputSignals: 1 },
+    { name: 'main.b', params: {}, template: 'B', inputSignals: 1 },
+  ],
+  signals: [
+    { names: ['one'], triggerComponents: [] },
+    { names: ['main.out', 'main.a.back', 'main.a.final', 'main.b.out'], triggerComponents: [] },
+    { names: ['main.in', 'main.a.in'], triggerComponents: [0, 1] },
+    { names: ['main.a.out', 'main.b.in'], triggerComponents: [2] },
+  ],
+  signalName2Idx: {
+    one: 0,
+    'main.in': 2,
+    'main.out': 1,
+    'main.a.in': 2,
+    'main.a.out': 3,
+    'main.a.back': 1,
+    'main.a.final': 1,
+    'main.b.in': 3,
+    'main.b.out': 1,
+  },
+};
+
+/*
+Generated by circom 0.0.35 from:
+
+template C() {
+    signal input in;
+    signal output back;
+    signal output final;
+
+    final <== back + in;
+}
+
+template Main() {
+    signal input in;
+    signal output out;
+
+    component c = C();
+
+    in + 5 ==> c.back;
+    c.in <== in;
+    c.final ==> out;
+}
+
+component main = Main();
+
+main.in aliases main.c.in, so input assignment makes both main and c ready.
+Old recursion runs main first and lets it initialize c.back before c runs.
+An eager queue drain at ctx entry runs c before main initializes c.back.
+*/
+const generatedParentFirstBackedgeCircuit = {
+  nVars: 3,
+  nInputs: 1,
+  nOutputs: 1,
+  nSignals: 4,
+  templates: {
+    C: `function(ctx) {
+    ctx.setSignal("final", [], bigInt(ctx.getSignal("back", [])).add(bigInt(ctx.getSignal("in", []))).mod(__P__));
+}
+`,
+    Main: `function(ctx) {
+    ctx.setPin("c", [], "back", [], bigInt(ctx.getSignal("in", [])).add(bigInt("5")).mod(__P__));
+    ctx.setPin("c", [], "in", [], ctx.getSignal("in", []));
+    ctx.setSignal("out", [], ctx.getPin("c", [], "final", []));
+}
+`,
+  },
+  functions: {},
+  components: [
+    { name: 'main', params: {}, template: 'Main', inputSignals: 1 },
+    { name: 'main.c', params: {}, template: 'C', inputSignals: 1 },
+  ],
+  signals: [
+    { names: ['one'], triggerComponents: [] },
+    { names: ['main.out', 'main.c.final'], triggerComponents: [] },
+    { names: ['main.in', 'main.c.in'], triggerComponents: [0, 1] },
+    { names: ['main.c.back'], triggerComponents: [] },
+  ],
+  signalName2Idx: {
+    one: 0,
+    'main.in': 2,
+    'main.out': 1,
+    'main.c.in': 2,
+    'main.c.back': 3,
+    'main.c.final': 1,
+  },
+};
+
+/*
+Generated by circom 0.0.35 from:
+
+template C() {
+    signal input in;
+    signal output out;
+
+    out <== in + 1;
+}
+
+template D() {
+    signal input in;
+    signal output out;
+
+    out <== in + 2;
+}
+
+template Main() {
+    signal input in;
+    signal output out;
+
+    component c = C();
+    component d = D();
+
+    d.in <== in + 5;
+    c.in <== in;
+    c.out ==> out;
+    d.out ==> out;
+}
+
+component main = Main();
+
+main.in aliases main.c.in, so input assignment makes both main and c ready.
+Old recursion runs d inside main, then c on the later c.in write, so c's
+write wins the shared output slot. A FIFO queue leaves c pending before d, so
+the later demand-drain runs c then d and d's write wins instead.
+*/
+const generatedDepthBreadthOverwriteCircuit = {
+  nVars: 3,
+  nInputs: 1,
+  nOutputs: 1,
+  nSignals: 4,
+  templates: {
+    C: `function(ctx) {
+    ctx.setSignal("out", [], bigInt(ctx.getSignal("in", [])).add(bigInt("1")).mod(__P__));
+}
+`,
+    D: `function(ctx) {
+    ctx.setSignal("out", [], bigInt(ctx.getSignal("in", [])).add(bigInt("2")).mod(__P__));
+}
+`,
+    Main: `function(ctx) {
+    ctx.setPin("d", [], "in", [], bigInt(ctx.getSignal("in", [])).add(bigInt("5")).mod(__P__));
+    ctx.setPin("c", [], "in", [], ctx.getSignal("in", []));
+    ctx.setSignal("out", [], ctx.getPin("c", [], "out", []));
+    ctx.setSignal("out", [], ctx.getPin("d", [], "out", []));
+}
+`,
+  },
+  functions: {},
+  components: [
+    { name: 'main', params: {}, template: 'Main', inputSignals: 1 },
+    { name: 'main.c', params: {}, template: 'C', inputSignals: 1 },
+    { name: 'main.d', params: {}, template: 'D', inputSignals: 1 },
+  ],
+  signals: [
+    { names: ['one'], triggerComponents: [] },
+    { names: ['main.out', 'main.c.out', 'main.d.out'], triggerComponents: [] },
+    { names: ['main.in', 'main.c.in'], triggerComponents: [0, 1] },
+    { names: ['main.d.in'], triggerComponents: [2] },
+  ],
+  signalName2Idx: {
+    one: 0,
+    'main.in': 2,
+    'main.out': 1,
+    'main.c.in': 2,
+    'main.c.out': 1,
+    'main.d.in': 3,
+    'main.d.out': 1,
+  },
+};
+
+/*
+Generated by circom 0.0.35 from:
+
+template C() {
+    signal input in;
+    signal output out;
+
+    out <== in + 1;
+}
+
+template Main() {
+    signal input in;
+    signal output out;
+
+    component c = C();
+
+    c.in <== in;
+    out <== in;
+    c.out ==> out;
+}
+
+component main = Main();
+
+main.in aliases main.c.in, so c is ready when main starts. Old recursion runs c
+on the first c.in write, then main's later out write overwrites the shared
+main.out/main.c.out slot. A queued scheduler that waits until getPin("c.out")
+runs c too late and returns c's value instead.
+*/
+const generatedParentOverwriteChildOutputCircuit = {
+  nVars: 3,
+  nInputs: 1,
+  nOutputs: 1,
+  nSignals: 3,
+  templates: {
+    C: `function(ctx) {
+    ctx.setSignal("out", [], bigInt(ctx.getSignal("in", [])).add(bigInt("1")).mod(__P__));
+}
+`,
+    Main: `function(ctx) {
+    ctx.setPin("c", [], "in", [], ctx.getSignal("in", []));
+    ctx.setSignal("out", [], ctx.getSignal("in", []));
+    ctx.setSignal("out", [], ctx.getPin("c", [], "out", []));
+}
+`,
+  },
+  functions: {},
+  components: [
+    { name: 'main', params: {}, template: 'Main', inputSignals: 1 },
+    { name: 'main.c', params: {}, template: 'C', inputSignals: 1 },
+  ],
+  signals: [
+    { names: ['one'], triggerComponents: [] },
+    { names: ['main.out', 'main.c.out'], triggerComponents: [] },
+    { names: ['main.in', 'main.c.in'], triggerComponents: [0, 1] },
+  ],
+  signalName2Idx: {
+    one: 0,
+    'main.in': 2,
+    'main.out': 1,
+    'main.c.in': 2,
+    'main.c.out': 1,
+  },
+};
+
+/*
+Generated by circom 0.0.35 from:
+
+template C() {
+    signal input in;
+    signal output out;
+
+    out <== in + 1;
+}
+
+template Main() {
+    signal input in;
+    signal output out;
+    component c = C();
+    var i;
+
+    for (i = 0; i < 1; c.in <== in) {
+        i++;
+    }
+
+    out <== in;
+    c.out ==> out;
+}
+
+component main = Main();
+
+Old circom can emit a signal assignment in the for-step clause:
+`for (...; ...; ctx.setPin("c", ...))`. A line-start-only generator transform
+does not yield there, so the parent can continue to the later `out <== in`
+before the queued child runs. Old recursion runs the child from the for-step
+assignment before the parent continuation.
+*/
+const generatedForStepChildTriggerCircuit = {
+  nVars: 3,
+  nInputs: 1,
+  nOutputs: 1,
+  nSignals: 3,
+  templates: {
+    C: `function(ctx) {
+    ctx.setSignal("out", [], bigInt(ctx.getSignal("in", [])).add(bigInt("1")).mod(__P__));
+}
+`,
+    Main: `function(ctx) {
+    for (ctx.setVar("i", [], "0");bigInt(bigInt(ctx.getVar("i",[])).lt(bigInt("1")) ? 1 : 0).neq(bigInt(0));ctx.setPin("c", [], "in", [], ctx.getSignal("in", []))) {
+    {
+        (ctx.setVar("i", [], bigInt(ctx.getVar("i",[])).add(bigInt("1")).mod(__P__))).add(__P__).sub(bigInt(1)).mod(__P__);
+    }
+
+     }
+    ctx.setSignal("out", [], ctx.getSignal("in", []));
+    ctx.setSignal("out", [], ctx.getPin("c", [], "out", []));
+}
+`,
+  },
+  functions: {},
+  components: [
+    { name: 'main', params: {}, template: 'Main', inputSignals: 1 },
+    { name: 'main.c', params: {}, template: 'C', inputSignals: 1 },
+  ],
+  signals: [
+    { names: ['one'], triggerComponents: [] },
+    { names: ['main.out', 'main.c.out'], triggerComponents: [] },
+    { names: ['main.in', 'main.c.in'], triggerComponents: [0, 1] },
+  ],
+  signalName2Idx: {
+    one: 0,
+    'main.in': 2,
+    'main.out': 1,
+    'main.c.in': 2,
+    'main.c.out': 1,
+  },
+};
+
+/*
+Generated by circom 0.0.35 from:
+
+template C(k) {
+    signal input in;
+    signal output out;
+    out <== in + k;
+}
+
+template Main() {
+    signal input in;
+    signal output out;
+    component c[3];
+    var i;
+    for (i = 0; i < 3; i++) {
+        c[i] = C(i + 1);
+    }
+    c[0].in <== in;
+    c[1].in <== in + 1;
+    out <== in;
+    c[0].out ==> out;
+    c[2].in <== c[1].out;
+    c[2].out ==> out;
+}
+
+component main = Main();
+
+main.in aliases main.c[0].in, and main.out aliases main.c[0].out and
+main.c[2].out. Old recursion runs c[0] immediately when main writes c[0].in,
+then main overwrites the shared output slot with `out <== in`. PR2 defers c[0]
+until the later read, so c[0] overwrites the parent value too late.
+*/
+const generatedArrayParentOverwriteCircuit = {
+  nVars: 5,
+  nInputs: 1,
+  nOutputs: 1,
+  nSignals: 5,
+  templates: {
+    C: `function(ctx) {
+    ctx.setSignal("out", [], bigInt(ctx.getSignal("in", [])).add(bigInt(ctx.getVar("k",[]))).mod(__P__));
+}
+`,
+    Main: `function(ctx) {
+    for (ctx.setVar("i", [], "0");bigInt(bigInt(ctx.getVar("i",[])).lt(bigInt("3")) ? 1 : 0).neq(bigInt(0));(ctx.setVar("i", [], bigInt(ctx.getVar("i",[])).add(bigInt("1")).mod(__P__))).add(__P__).sub(bigInt(1)).mod(__P__)) {
+    {
+    }
+
+     }
+    ctx.setPin("c", ["0"], "in", [], ctx.getSignal("in", []));
+    ctx.setPin("c", ["1"], "in", [], bigInt(ctx.getSignal("in", [])).add(bigInt("1")).mod(__P__));
+    ctx.setSignal("out", [], ctx.getSignal("in", []));
+    ctx.setSignal("out", [], ctx.getPin("c", ["0"], "out", []));
+    ctx.setPin("c", ["2"], "in", [], ctx.getPin("c", ["1"], "out", []));
+    ctx.setSignal("out", [], ctx.getPin("c", ["2"], "out", []));
+}
+`,
+  },
+  functions: {},
+  components: [
+    { name: 'main', params: {}, template: 'Main', inputSignals: 1 },
+    { name: 'main.c[0]', params: { k: '1' }, template: 'C', inputSignals: 1 },
+    { name: 'main.c[1]', params: { k: '2' }, template: 'C', inputSignals: 1 },
+    { name: 'main.c[2]', params: { k: '3' }, template: 'C', inputSignals: 1 },
+  ],
+  signals: [
+    { names: ['one'], triggerComponents: [] },
+    { names: ['main.out', 'main.c[0].out', 'main.c[2].out'], triggerComponents: [] },
+    { names: ['main.in', 'main.c[0].in'], triggerComponents: [0, 1] },
+    { names: ['main.c[1].in'], triggerComponents: [2] },
+    { names: ['main.c[1].out', 'main.c[2].in'], triggerComponents: [3] },
+  ],
+  signalName2Idx: {
+    one: 0,
+    'main.in': 2,
+    'main.out': 1,
+    'main.c[0].in': 2,
+    'main.c[0].out': 1,
+    'main.c[1].in': 3,
+    'main.c[1].out': 4,
+    'main.c[2].in': 4,
+    'main.c[2].out': 1,
+  },
+};
+
+/*
+Generated by circom 0.0.35 from:
+
+function setChild(v) {
+    signal output childIn;
+
+    childIn <== v;
+    return v;
+}
+
+template C() {
+    signal input in;
+    signal output out;
+
+    out <== in + 1;
+}
+
+template Main() {
+    signal input in;
+    signal output out;
+    signal childIn;
+    component c = C();
+    var x;
+
+    x = setChild(in);
+    out <== in;
+    c.out ==> out;
+    childIn ==> c.in;
+}
+
+component main = Main();
+
+Old circom allows functions to emit `ctx.setSignal`. Functions are not
+templates, so a template-only generator transform does not yield when setChild
+writes childIn. Old recursion runs c from inside the function before main's
+later out write; the prototype queues c and only drains at the next template
+yield, after main has already written out.
+*/
+const generatedFunctionChildTriggerLateAliasCircuit = {
+  nVars: 4,
+  nInputs: 1,
+  nOutputs: 2,
+  nSignals: 4,
+  templates: {
+    C: `function(ctx) {
+    ctx.setSignal("out", [], bigInt(ctx.getSignal("in", [])).add(bigInt("1")).mod(__P__));
+}
+`,
+    Main: `function(ctx) {
+    ctx.setVar("x", [], ctx.callFunction("setChild", [ctx.getSignal("in", [])]));
+    ctx.setSignal("out", [], ctx.getSignal("in", []));
+    ctx.setSignal("out", [], ctx.getPin("c", [], "out", []));
+    ctx.setPin("c", [], "in", [], ctx.getSignal("childIn", []));
+}
+`,
+  },
+  functions: {
+    setChild: {
+      params: ['v'],
+      func: `function(ctx) {
+    ctx.setSignal("childIn", [], ctx.getVar("v",[]));
+    return ctx.getVar("v",[]);;
+}
+`,
+    },
+  },
+  components: [
+    { name: 'main', params: {}, template: 'Main', inputSignals: 1 },
+    { name: 'main.c', params: {}, template: 'C', inputSignals: 1 },
+  ],
+  signals: [
+    { names: ['one'], triggerComponents: [] },
+    { names: ['main.out', 'main.c.out'], triggerComponents: [] },
+    { names: ['main.childIn', 'main.c.in'], triggerComponents: [1] },
+    { names: ['main.in'], triggerComponents: [0] },
+  ],
+  signalName2Idx: {
+    one: 0,
+    'main.in': 3,
+    'main.out': 1,
+    'main.childIn': 2,
+    'main.c.in': 2,
+    'main.c.out': 1,
+  },
+};
+
+/*
+Generated by circom 0.0.35 from:
+
+template Main() {
+    signal input in;
+    signal output out;
+
+    out <-- in << 3;
+}
+
+component main = Main();
+
+Old circom emits `<<` as a BigInt-like `.shl(...)` method call in the
+serialized witness program.
+*/
+const generatedShiftLeftCircuit = {
+  nVars: 3,
+  nInputs: 1,
+  nOutputs: 1,
+  nSignals: 3,
+  templates: {
+    Main: `function(ctx) {
+    ctx.setSignal("out", [], bigInt("3").greater(bigInt(256)) ? 0 : bigInt(ctx.getSignal("in", [])).shl(bigInt("3")).and(__MASK__));
+}
+`,
+  },
+  functions: {},
+  components: [{ name: 'main', params: {}, template: 'Main', inputSignals: 1 }],
+  signals: [
+    { names: ['one'], triggerComponents: [] },
+    { names: ['main.out'], triggerComponents: [] },
+    { names: ['main.in'], triggerComponents: [0] },
+  ],
+  signalName2Idx: {
+    one: 0,
+    'main.out': 1,
+    'main.in': 2,
+  },
+};
+
+const generatedAssertPathTokenCircuit = {
+  nVars: 3,
+  nInputs: 1,
+  nOutputs: 1,
+  nSignals: 3,
+  templates: {
+    Main: `function(ctx) {
+    ctx.setSignal("out", [], ctx.getSignal("in", []));
+    ctx.assert(ctx.getSignal("in", []), bigInt(ctx.getSignal("in", [])).add(bigInt("1")).mod(__P__), "/tmp/ctx.setSignal(/ctx.setPin(/ctx.callFunction(/case.circom:6:4");
+}
+`,
+  },
+  functions: {},
+  components: [{ name: 'main', params: {}, template: 'Main', inputSignals: 1 }],
+  signals: [
+    { names: ['one'], triggerComponents: [] },
+    { names: ['main.out'], triggerComponents: [] },
+    { names: ['main.in'], triggerComponents: [0] },
+  ],
+  signalName2Idx: {
+    one: 0,
+    'main.out': 1,
+    'main.in': 2,
+  },
 };
 
 //const groth16 = zkp.buildSnark(bn254, { unsafePreserveToxic: true }).groth;
@@ -76,6 +729,135 @@ describe('Witness', () => {
       restoreBigInt(before);
     }
   });
+  should('generateWitness fails cleanly when BigInt patching is impossible', () => {
+    const script = `
+      import { generateWitness } from './witness.js';
+      const methods = ${JSON.stringify(bigintPatchNames)};
+      const circuit = {
+        nVars: 2,
+        nInputs: 0,
+        nOutputs: 1,
+        nSignals: 2,
+        templates: { Main: 'function(ctx) { ctx.setSignal("out", [], "1"); }' },
+        functions: {},
+        components: [{ name: 'main', params: {}, template: 'Main', inputSignals: 0 }],
+        signals: [
+          { names: ['one'], triggerComponents: [] },
+          { names: ['main.out'], triggerComponents: [] },
+        ],
+        signalName2Idx: { one: 0, 'main.out': 1 },
+      };
+      const same = (a, b) =>
+        (!a && !b) ||
+        (a &&
+          b &&
+          a.configurable === b.configurable &&
+          a.enumerable === b.enumerable &&
+          a.writable === b.writable &&
+          a.value === b.value &&
+          a.get === b.get &&
+          a.set === b.set);
+      const before = Object.fromEntries(
+        methods.map((name) => [name, Object.getOwnPropertyDescriptor(BigInt.prototype, name)])
+      );
+      Object.defineProperty(BigInt.prototype, 'shl', {
+        configurable: false,
+        value() {
+          return 123n;
+        },
+      });
+      try {
+        generateWitness(circuit)({});
+        console.error('unexpected success');
+        process.exit(1);
+      } catch (err) {
+        if (!String(err && err.message).includes('shl')) {
+          console.error(String(err && err.stack ? err.stack : err));
+          process.exit(1);
+        }
+      }
+      for (const name of methods) {
+        if (name === 'shl') continue;
+        if (!same(before[name], Object.getOwnPropertyDescriptor(BigInt.prototype, name))) {
+          console.error('leaked ' + name);
+          process.exit(1);
+        }
+      }
+      console.log('ok');
+    `;
+    const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: joinPath(_dirname, '..'),
+      encoding: 'utf8',
+    });
+    deepStrictEqual(
+      { status: res.status, stdout: res.stdout.trim(), stderr: res.stderr.trim() },
+      {
+        status: 0,
+        stdout: 'ok',
+        stderr: '',
+      }
+    );
+  });
+  should('yieldCtxCalls yields only executable scheduler ctx calls', () => {
+    deepStrictEqual(
+      witness.__TESTS.yieldCtxCalls(`function(ctx) {
+    ctx.setSignal("out", [], ctx.getSignal("in", []));
+    ctx.setPin("c", [], "in", [], ctx.callFunction("id", [ctx.getSignal("in", [])]));
+    ctx.setVar("x", [], ctx.setSignal("tmp", [], "1"));
+}
+`),
+      `function(ctx) {
+    yield ctx.setSignal("out", [], ctx.getSignal("in", []));
+    yield ctx.setPin("c", [], "in", [], yield ctx.callFunction("id", [ctx.getSignal("in", [])]));
+    ctx.setVar("x", [], yield ctx.setSignal("tmp", [], "1"));
+}
+`
+    );
+  });
+  should('yieldCtxCalls leaves strings and comments unchanged', () => {
+    deepStrictEqual(
+      witness.__TESTS.yieldCtxCalls(`function(ctx) {
+    const quoted = "ctx.setSignal('x') and ctx.callFunction(\\"f\\")";
+    const single = 'ctx.setPin("c")';
+    const templ = \`ctx.setSignal("templ")\`;
+    // ctx.setSignal("line")
+    /* ctx.setPin("block")
+       ctx.callFunction("block") */
+    throw new Error("/tmp/ctx.setSignal(/ctx.setPin(/ctx.callFunction(/case.circom:6:4");
+    ctx.setSignal("out", [], "1");
+}
+`),
+      `function(ctx) {
+    const quoted = "ctx.setSignal('x') and ctx.callFunction(\\"f\\")";
+    const single = 'ctx.setPin("c")';
+    const templ = \`ctx.setSignal("templ")\`;
+    // ctx.setSignal("line")
+    /* ctx.setPin("block")
+       ctx.callFunction("block") */
+    throw new Error("/tmp/ctx.setSignal(/ctx.setPin(/ctx.callFunction(/case.circom:6:4");
+    yield ctx.setSignal("out", [], "1");
+}
+`
+    );
+  });
+  should('yieldCtxCalls requires real ctx identifier boundaries', () => {
+    deepStrictEqual(
+      witness.__TESTS.yieldCtxCalls(`function(ctx) {
+    myctx.setSignal("out", [], "1");
+    obj.ctx.setPin("c", [], "in", [], "1");
+    $ctx.callFunction("id", []);
+    ctx.setSignal("out", [], "2");
+}
+`),
+      `function(ctx) {
+    myctx.setSignal("out", [], "1");
+    obj.ctx.setPin("c", [], "in", [], "1");
+    $ctx.callFunction("id", []);
+    yield ctx.setSignal("out", [], "2");
+}
+`
+    );
+  });
   should('generateWitness reads own input fields only', () => {
     const gen = witness.generateWitness(sumCircuit);
     const expected = [1n, 67n, 34n, 33n];
@@ -84,6 +866,58 @@ describe('Witness', () => {
     deepStrictEqual(gen(inheritedExtra).slice(0, 4), expected);
     const inheritedRequired = Object.assign(Object.create({ b: '34' }), { a: '33' });
     throws(() => gen(inheritedRequired), /Input Signal not assigned:/);
+  });
+  should('generateWitness preserves sibling component reads after setPin', () => {
+    const gen = witness.generateWitness(siblingCircuit);
+    deepStrictEqual(gen({ in: '10' }), [1n, 12n, 10n, 10n, 11n, 12n]);
+  });
+  should('generateWitness preserves circom 0.0.35 output-backedge ordering', () => {
+    const gen = witness.generateWitness(generatedOutputBackedgeCircuit);
+    deepStrictEqual(gen({ in: '10' }), [1n, 12n, 10n]);
+  });
+  should('generateWitness preserves circom 0.0.35 parent-first backedge ordering', () => {
+    const gen = witness.generateWitness(generatedParentFirstBackedgeCircuit);
+    deepStrictEqual(gen({ in: '10' }), [1n, 25n, 10n]);
+  });
+  should('generateWitness preserves circom 0.0.35 depth-first overwrite ordering', () => {
+    const gen = witness.generateWitness(generatedDepthBreadthOverwriteCircuit);
+    deepStrictEqual(gen({ in: '10' }), [1n, 11n, 10n]);
+  });
+  should('generateWitness preserves circom 0.0.35 parent overwrite after child ordering', () => {
+    const gen = witness.generateWitness(generatedParentOverwriteChildOutputCircuit);
+    deepStrictEqual(gen({ in: '10' }), [1n, 10n, 10n]);
+  });
+  should('generateWitness preserves circom 0.0.35 array parent overwrite ordering', () => {
+    const gen = witness.generateWitness(generatedArrayParentOverwriteCircuit);
+    deepStrictEqual(gen({ in: '10' }), [1n, 10n, 10n, 11n, 13n]);
+  });
+  should('generateWitness preserves circom 0.0.35 for-step child trigger ordering', () => {
+    const gen = witness.generateWitness(generatedForStepChildTriggerCircuit);
+    deepStrictEqual(gen({ in: '10' }), [1n, 10n, 10n]);
+  });
+  should('generateWitness preserves circom 0.0.35 function child trigger ordering', () => {
+    const gen = witness.generateWitness(generatedFunctionChildTriggerLateAliasCircuit);
+    deepStrictEqual(gen({ in: '10' }), [1n, 10n, 10n, 10n]);
+  });
+  should('generateWitness supports circom 0.0.35 shift-left output', () => {
+    const gen = witness.generateWitness(generatedShiftLeftCircuit);
+    deepStrictEqual(gen({ in: '5' }), [1n, 40n, 5n]);
+  });
+  should('generateWitness preserves circom 0.0.35 assertion path strings', () => {
+    const gen = witness.generateWitness(generatedAssertPathTokenCircuit);
+    throws(
+      () => gen({ in: '10' }),
+      /^Error: Constraint doesn't match main: \/tmp\/ctx\.setSignal\(\/ctx\.setPin\(\/ctx\.callFunction\(\/case\.circom:6:4 -> 10 != 11$/
+    );
+  });
+  should('generateWitness handles duplicate aliased trigger components once', () => {
+    const circuit = buildDuplicateTriggerCircuit(5, 4);
+    deepStrictEqual(
+      circuit.signals[3].triggerComponents,
+      [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5]
+    );
+    const gen = witness.generateWitness(circuit);
+    deepStrictEqual(gen({ in: '7' }), [1n, 7n, 7n, 7n]);
   });
   should('R1CS', () => {
     const data = Uint8Array.from(readFileSync(joinPath(_dirname, './vectors/sum_test.r1cs')));
@@ -294,9 +1128,77 @@ describe('Witness', () => {
         readFileSync(joinPath(_dirname, './vectors/keys/public.json'), 'utf8')
       ),
     });
-    console.log('PROOF', JSON.stringify(zkp.stringBigints.encode(proof)));
+    // console.log('PROOF', JSON.stringify(zkp.stringBigints.encode(proof)));
     deepStrictEqual(groth16.verifyProof(vkey, proof), true);
   });
+
+  // ── deep relay-chain tests ────────────────────────────────────────────────────
+  // These tests exercise the queue-based component-drain introduced to prevent
+  // call-stack overflow on circuits with long inter-template chains.
+
+  should('deep relay chain: correct output for small N', () => {
+    // Functional sanity check: a 10-component relay chain passes the input value
+    // through unchanged.  result[1] is the main.out slot.
+    const gen = witness.generateWitness(buildDeepChainCircuit(10));
+    deepStrictEqual(gen({ in: '42' })[1], 42n);
+  });
+
+  should(
+    'deep relay chain: no stack overflow under reduced stack size (N=1000, stack=256kB)',
+    () => {
+      // Spawn a subprocess with --stack-size=256 (256 kB).  Under the old synchronous-
+      // recursion approach 1000 triggerComponent frames would exceed that budget and
+      // crash with "Maximum call stack size exceeded".  The queue-based drain must
+      // process all components iteratively and exit 0.
+      const result = spawnSync(
+        process.execPath,
+        ['--stack-size=256', joinPath(_dirname, 'helpers', 'deep-chain-runner.js')],
+        { timeout: 30_000, encoding: 'utf8' }
+      );
+      deepStrictEqual(
+        result.status,
+        0,
+        `Subprocess crashed (status ${result.status}):\n${result.stderr}`
+      );
+    }
+  );
+  should(
+    'nested direct-child chain: no stack overflow under reduced stack size (N=200, stack=256kB)',
+    () => {
+      // Old circom 0.0.35 can emit direct nested child component hierarchies.
+      // The scheduler must preserve immediate child-before-parent-continuation
+      // ordering without implementing it as normal recursive JS calls.
+      const result = spawnSync(
+        process.execPath,
+        ['--stack-size=256', joinPath(_dirname, 'helpers', 'nested-direct-runner.js')],
+        { timeout: 30_000, encoding: 'utf8' }
+      );
+      deepStrictEqual(
+        result.status,
+        0,
+        `Subprocess crashed (status ${result.status}):\n${result.stderr}`
+      );
+    }
+  );
+  should(
+    'function-triggered child chain: no stack overflow under reduced stack size (N=500, stack=256kB)',
+    () => {
+      // Old circom 0.0.35 can emit ctx.setSignal from generated functions. If
+      // function-triggered child work is drained from inside the caller's active
+      // generator step, a nested component hierarchy can still recurse through
+      // JS calls even though template-level setPin/setSignal statements yield.
+      const result = spawnSync(
+        process.execPath,
+        ['--stack-size=256', joinPath(_dirname, 'helpers', 'function-trigger-runner.js')],
+        { timeout: 30_000, encoding: 'utf8' }
+      );
+      deepStrictEqual(
+        result.status,
+        0,
+        `Subprocess crashed (status ${result.status}):\n${result.stderr}`
+      );
+    }
+  );
 });
 
 should.runWhen(import.meta.url);

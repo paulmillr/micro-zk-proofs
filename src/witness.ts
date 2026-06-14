@@ -56,34 +56,49 @@ function monkeyPatchBigInt() {
     modPow: (a: bigint, power: bigint, modulo: bigint) => pow(a, power, modulo),
     // Binary
     and: (a: bigint, b: bigint) => a & b,
+    // Old circom serializes `<<` as `.shl(...)`, matching snarkjs v0.2.0's bigint shim.
+    shl: (a: bigint, b: bigint) => a << BigInt(b),
     shr: (a: bigint, b: bigint) => a >> BigInt(b),
   };
   let patched = false;
   let orig: Record<string, PropertyDescriptor | undefined> = {};
   const proto = BigInt.prototype as any;
+  const restoreOne = (name: string, desc: PropertyDescriptor | undefined) => {
+    if (!desc) delete proto[name];
+    else Object.defineProperty(proto, name, desc);
+  };
   return {
     patch() {
       if (patched) throw new Error('bigint: already patched');
+      const snap: Record<string, PropertyDescriptor | undefined> = {};
       for (const name in methods) {
+        const desc = Object.getOwnPropertyDescriptor(proto, name);
+        if (desc && !desc.configurable)
+          throw new Error(`bigint: cannot patch non-configurable BigInt.prototype.${name}`);
         // Preserve descriptors: callers may have accessors or own undefined-valued properties here.
-        orig[name] = Object.getOwnPropertyDescriptor(proto, name);
-        Object.defineProperty(proto, name, {
-          configurable: true,
-          enumerable: orig[name]?.enumerable || false,
-          value: function (...args: any[]) {
-            return (methods as any)[name](this, ...args);
-          },
-          writable: true,
-        });
+        snap[name] = desc;
       }
+      try {
+        for (const name in methods) {
+          Object.defineProperty(proto, name, {
+            configurable: true,
+            enumerable: snap[name]?.enumerable || false,
+            value: function (...args: any[]) {
+              return (methods as any)[name](this, ...args);
+            },
+            writable: true,
+          });
+        }
+      } catch (err) {
+        for (const name in snap) restoreOne(name, snap[name]);
+        throw err;
+      }
+      orig = snap;
       patched = true;
     },
     restore() {
       if (!patched) throw new Error('bigint: not patched');
-      for (const name in methods) {
-        if (!orig[name]) delete proto[name];
-        else Object.defineProperty(proto, name, orig[name]);
-      }
+      for (const name in methods) restoreOne(name, orig[name]);
       orig = {};
       patched = false;
     },
@@ -98,6 +113,29 @@ const select = (a: any, selectors: string[]): any => {
   return a;
 };
 type Scope = Record<string, any>;
+// Old circom can emit setPin/setSignal from templates and functions, including
+// expression positions such as for headers. It can also emit nested function calls
+// that trigger child components. Yielding those calls lets the scheduler
+// trampoline recursive triggers before the caller continues.
+const ctxYieldCall = /(^|[^\w$.])(ctx\.(?:callFunction|setPin|setSignal)\()/g;
+const jsIgnored =
+  /("(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`|\/\/[^\n\r]*(?:\r\n?|\n|$)|\/\*[\s\S]*?\*\/)/g;
+const yieldCtxCalls = (src: string): string => {
+  const code = (chunk: string): string => chunk.replace(ctxYieldCall, '$1yield $2');
+  let out = '';
+  let last = 0;
+  for (const match of src.matchAll(jsIgnored)) {
+    out += code(src.slice(last, match.index)) + match[0];
+    last = match.index + match[0].length;
+  }
+  return out + code(src.slice(last));
+};
+const codeToGenerator = (src: string) =>
+  yieldCtxCalls(src.replace(/function\s*\(\s*ctx\s*\)\s*\{/, 'function*(ctx) {'));
+export const __TESTS: Readonly<{ yieldCtxCalls: (src: string) => string }> =
+  /* @__PURE__ */ Object.freeze({
+    yieldCtxCalls: yieldCtxCalls,
+  });
 /**
  * Builds a witness generator for a legacy circom-js circuit JSON.
  * @param circJson - Circom circuit JSON artifact.
@@ -160,21 +198,23 @@ export function generateWitness(circJson: any): (input: any) => any {
   const templates: Record<string, Function> = {};
   // Bind P & MASK directly into templates/functions, so we see dependency
   for (let t in circJson.templates) {
-    templates[t] = new Function('bigInt', '__P__', '__MASK__', 'return ' + circJson.templates[t])(
-      BigInt,
-      P,
-      MASK
-    );
+    templates[t] = new Function(
+      'bigInt',
+      '__P__',
+      '__MASK__',
+      'return ' + codeToGenerator(circJson.templates[t])
+    )(BigInt, P, MASK);
   }
   const functions: Record<string, { params: any[]; func: Function }> = {};
   for (let f in circJson.functions) {
     functions[f] = {
       params: circJson.functions[f].params,
-      func: new Function('bigInt', '__P__', '__MASK__', 'return ' + circJson.functions[f].func)(
-        BigInt,
-        P,
-        MASK
-      ),
+      func: new Function(
+        'bigInt',
+        '__P__',
+        '__MASK__',
+        'return ' + codeToGenerator(circJson.functions[f].func)
+      )(BigInt, P, MASK),
     };
   }
   function inputIdx(i: any) {
@@ -196,14 +236,26 @@ export function generateWitness(circJson: any): (input: any) => any {
     let currentComponent: string | undefined;
     let scopes: Scope[] = []; // scope stack
     const notInitSignals = {} as any;
-
-    function inScope(newScope: Scope, cb: Function) {
-      const oldScope = scopes;
-      scopes = [scopes[0], newScope];
-      const res = cb();
-      scopes = oldScope;
-      return res;
-    }
+    const callFrameTag = Symbol('callFrame');
+    // Ready component frames preserve old depth-first trigger order without growing
+    // the JS call stack on long generated chains.
+    const pendingComponents: any[] = [];
+    type ExecFrame = {
+      name: string | undefined;
+      scope: Scope;
+      iter: any;
+      ready: any[];
+      resume: any;
+      hasResume: boolean;
+      done: boolean;
+      value: any;
+      returnTo?: ExecFrame;
+    };
+    const execFrames: ExecFrame[] = [];
+    let draining = false;
+    let stepping = false;
+    const isCallFrame = (value: any): value is { tag: typeof callFrameTag; frame: ExecFrame } =>
+      value !== undefined && value.tag === callFrameTag;
 
     function triggerComponent(c: any) {
       notInitSignals[c]--;
@@ -212,27 +264,131 @@ export function generateWitness(circJson: any): (input: any) => any {
       const template = components[c].template;
       const newScope: any = {};
       for (let p in components[c].params) newScope[p] = components[c].params[p];
-      inScope(newScope, () => templates[template](ctx));
+      execFrames.push({
+        name: components[c].name,
+        scope: newScope,
+        iter: templates[template](ctx),
+        ready: [],
+        resume: undefined,
+        hasResume: false,
+        done: false,
+        value: undefined,
+      });
       currentComponent = oldComponent;
+    }
+    function activeReady() {
+      return execFrames.length > 0 ? execFrames[execFrames.length - 1].ready : pendingComponents;
+    }
+    function removeQueued(c: any) {
+      let pendingIdx = pendingComponents.indexOf(c);
+      while (pendingIdx >= 0) {
+        pendingComponents.splice(pendingIdx, 1);
+        pendingIdx = pendingComponents.indexOf(c);
+      }
+      for (const frame of execFrames) {
+        let idx = frame.ready.indexOf(c);
+        while (idx >= 0) {
+          frame.ready.splice(idx, 1);
+          idx = frame.ready.indexOf(c);
+        }
+      }
+    }
+    function queueReady(c: any) {
+      // A generated parent can re-trigger a component already queued by an input
+      // alias. Old recursion runs it at the later trigger point, so move it there.
+      removeQueued(c);
+      activeReady().push(c);
+    }
+    function stepFrame() {
+      const frame = execFrames[execFrames.length - 1];
+      const oldComponent = currentComponent;
+      const oldScope = scopes;
+      const wasStepping = stepping;
+      currentComponent = frame.name;
+      scopes = [scopes[0], frame.scope];
+      stepping = true;
+      try {
+        const res = frame.hasResume ? frame.iter.next(frame.resume) : frame.iter.next();
+        frame.hasResume = false;
+        if (!res.done) {
+          if (isCallFrame(res.value)) {
+            res.value.frame.returnTo = frame;
+            execFrames.push(res.value.frame);
+            return;
+          }
+          frame.resume = res.value;
+          frame.hasResume = true;
+          return;
+        }
+        frame.done = true;
+        frame.value = res.value;
+        execFrames.pop();
+        if (frame.returnTo !== undefined) {
+          frame.returnTo.resume = frame.value;
+          frame.returnTo.hasResume = true;
+        }
+        if (frame.ready.length > 0) activeReady().unshift(...frame.ready);
+      } finally {
+        stepping = wasStepping;
+        scopes = oldScope;
+        currentComponent = oldComponent;
+      }
+    }
+    function drainStep() {
+      const ready = activeReady();
+      if (ready.length == 0) return stepFrame();
+      const c = ready.shift();
+      if (notInitSignals[c] >= 0) triggerComponent(c);
+    }
+    function drainFrame(frame: (typeof execFrames)[number]) {
+      while (!frame.done) drainStep();
+      return frame.value;
+    }
+    // Process ready components until none remain in the active frame. The notInitSignals guard
+    // (>= 0) skips duplicates: triggerComponent decrements to -1 on first call, so
+    // any component pushed twice will be a no-op on the second dequeue.
+    function drainPendingComponents(force = false) {
+      if (stepping) return;
+      if (draining && !force) return;
+      const wasDraining = draining;
+      draining = true;
+      try {
+        while (activeReady().length > 0 || execFrames.length > 0) drainStep();
+      } finally {
+        draining = wasDraining;
+      }
     }
     function setSignalFullName(fullName: any, value: any) {
       const sId = getSignalIdx(fullName);
       let firstInit = false;
       if (witness[sId] === undefined) firstInit = true;
       witness[sId] = BigInt(value);
-      const callComponents = [];
+      const triggers = signals[sId].triggerComponents;
       for (let i = 0; i < signals[sId].triggerComponents.length; i++) {
-        var idCmp = signals[sId].triggerComponents[i];
+        const idCmp = triggers[i];
         if (firstInit) notInitSignals[idCmp]--;
-        callComponents.push(idCmp);
       }
-      callComponents.map((c) => {
-        if (notInitSignals[c] == 0) triggerComponent(c);
-      });
+      const seen = new Set();
+      for (let i = 0; i < triggers.length; i++) {
+        const c = triggers[i];
+        // Old circom can alias many inputs of the same component to one signal,
+        // producing duplicate trigger ids. Decrement every alias first, then
+        // queue each ready component once in old first-trigger order; repeated
+        // queueReady calls repeatedly scan queues and can move duplicates.
+        if (notInitSignals[c] == 0 && !seen.has(c)) {
+          seen.add(c);
+          queueReady(c);
+        }
+      }
+      if (!stepping) drainPendingComponents();
       return witness[sId];
     }
     function getSignalFullName(name: string) {
       const id = getSignalIdx(name);
+      // Circom-generated code can make several components ready at once through
+      // aliasing. Drain only when this read actually needs pending work; eager
+      // drains can run a child before the current parent reaches an earlier write.
+      if (witness[id] === undefined && activeReady().length > 0) drainPendingComponents(true);
       if (witness[id] === undefined) throw new Error('Signal not initialized: ' + name);
       return witness[id];
     }
@@ -285,7 +441,19 @@ export function generateWitness(circJson: any): (input: any) => any {
         const newScope: Record<string, any> = {};
         for (let p = 0; p < functions[name].params.length; p++)
           newScope[functions[name].params[p]] = params[p];
-        return inScope(newScope, () => functions[name].func(ctx));
+        const frame = {
+          name: currentComponent,
+          scope: newScope,
+          iter: functions[name].func(ctx),
+          ready: [] as any[],
+          resume: undefined,
+          hasResume: false,
+          done: false,
+          value: undefined,
+        };
+        if (stepping) return { tag: callFrameTag, frame };
+        execFrames.push(frame);
+        return drainFrame(frame);
       },
       assert(a: any, b: any, errStr: string = '') {
         a = BigInt(a);
@@ -299,7 +467,11 @@ export function generateWitness(circJson: any): (input: any) => any {
       // Processing
       for (const c in components) notInitSignals[c] = components[c].inputSignals;
       ctx.setSignal('one', [], BigInt(1));
-      for (let c in notInitSignals) if (notInitSignals[c] == 0) triggerComponent(c);
+      // Queue all components that are already fully initialised (zero remaining inputs)
+      // and drain the queue iteratively rather than triggering them inline. This avoids
+      // a call-stack overflow when complex circuits have long inter-template chains.
+      for (let c in notInitSignals) if (notInitSignals[c] == 0) queueReady(c);
+      drainPendingComponents();
       // Circuit JSON inputs are own fields; prototypes may carry unrelated app metadata.
       for (const s of Object.keys(input)) {
         currentComponent = 'main';
