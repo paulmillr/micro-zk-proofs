@@ -4,10 +4,10 @@ import { keccakprg } from '@noble/hashes/sha3-addons.js';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
 import { describe, should } from '@paulmillr/jsbt/test.js';
 import { deepStrictEqual, throws } from 'node:assert';
-import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join as joinPath } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import * as zkp from '../index.js';
 import * as witness from '../witness.js';
 import { buildDeepChainCircuit, buildDuplicateTriggerCircuit } from './helpers/chain-circuit.js';
@@ -57,6 +57,30 @@ const restoreBigInt = (state) => {
     else Object.defineProperty(bigintProto, name, desc);
   }
 };
+const runWorker = (filename, options = {}) =>
+  new Promise((resolve) => {
+    const worker = new Worker(filename, { execArgv: [], ...options });
+    let message;
+    let error;
+    const timeout = setTimeout(() => {
+      error = 'worker timed out';
+      worker.terminate();
+    }, 30_000);
+    worker.once('message', (msg) => {
+      message = msg;
+    });
+    worker.once('error', (err) => {
+      error = String(err && err.stack ? err.stack : err);
+    });
+    worker.once('exit', (status) => {
+      clearTimeout(timeout);
+      resolve({ status, message, error });
+    });
+  });
+const runHelperWorker = (name) =>
+  runWorker(pathToFileURL(joinPath(_dirname, 'helpers', name)), {
+    resourceLimits: { stackSizeMb: 0.5 },
+  });
 
 const siblingCircuit = {
   nVars: 6,
@@ -729,9 +753,12 @@ describe('Witness', () => {
       restoreBigInt(before);
     }
   });
-  should('generateWitness fails cleanly when BigInt patching is impossible', () => {
+  should('generateWitness fails cleanly when BigInt patching is impossible', async () => {
     const script = `
-      import { generateWitness } from './witness.js';
+      import { parentPort } from 'node:worker_threads';
+      import { generateWitness } from ${JSON.stringify(
+        pathToFileURL(joinPath(_dirname, '..', 'witness.js')).href
+      )};
       const methods = ${JSON.stringify(bigintPatchNames)};
       const circuit = {
         nVars: 2,
@@ -779,22 +806,18 @@ describe('Witness', () => {
       for (const name of methods) {
         if (name === 'shl') continue;
         if (!same(before[name], Object.getOwnPropertyDescriptor(BigInt.prototype, name))) {
-          console.error('leaked ' + name);
-          process.exit(1);
+          throw new Error('leaked ' + name);
         }
       }
-      console.log('ok');
+      parentPort.postMessage('ok');
+      process.exit(0);
     `;
-    const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
-      cwd: joinPath(_dirname, '..'),
-      encoding: 'utf8',
-    });
     deepStrictEqual(
-      { status: res.status, stdout: res.stdout.trim(), stderr: res.stderr.trim() },
+      await runWorker(script, { eval: true, type: 'module' }),
       {
         status: 0,
-        stdout: 'ok',
-        stderr: '',
+        message: 'ok',
+        error: undefined,
       }
     );
   });
@@ -1145,57 +1168,43 @@ describe('Witness', () => {
 
   should(
     'deep relay chain: no stack overflow under reduced stack size (N=1000, stack=256kB)',
-    () => {
-      // Spawn a subprocess with --stack-size=256 (256 kB).  Under the old synchronous-
-      // recursion approach 1000 triggerComponent frames would exceed that budget and
-      // crash with "Maximum call stack size exceeded".  The queue-based drain must
-      // process all components iteratively and exit 0.
-      const result = spawnSync(
-        process.execPath,
-        ['--stack-size=256', joinPath(_dirname, 'helpers', 'deep-chain-runner.js')],
-        { timeout: 30_000, encoding: 'utf8' }
-      );
+    async () => {
+      // Use a worker isolate with a reduced stack. Under the old synchronous-recursion
+      // approach 1000 triggerComponent frames would exceed this budget.
+      const result = await runHelperWorker('deep-chain-runner.js');
       deepStrictEqual(
         result.status,
         0,
-        `Subprocess crashed (status ${result.status}):\n${result.stderr}`
+        `Worker crashed (status ${result.status}):\n${result.error}`
       );
     }
   );
   should(
     'nested direct-child chain: no stack overflow under reduced stack size (N=200, stack=256kB)',
-    () => {
+    async () => {
       // Old circom 0.0.35 can emit direct nested child component hierarchies.
       // The scheduler must preserve immediate child-before-parent-continuation
       // ordering without implementing it as normal recursive JS calls.
-      const result = spawnSync(
-        process.execPath,
-        ['--stack-size=256', joinPath(_dirname, 'helpers', 'nested-direct-runner.js')],
-        { timeout: 30_000, encoding: 'utf8' }
-      );
+      const result = await runHelperWorker('nested-direct-runner.js');
       deepStrictEqual(
         result.status,
         0,
-        `Subprocess crashed (status ${result.status}):\n${result.stderr}`
+        `Worker crashed (status ${result.status}):\n${result.error}`
       );
     }
   );
   should(
     'function-triggered child chain: no stack overflow under reduced stack size (N=500, stack=256kB)',
-    () => {
+    async () => {
       // Old circom 0.0.35 can emit ctx.setSignal from generated functions. If
       // function-triggered child work is drained from inside the caller's active
       // generator step, a nested component hierarchy can still recurse through
       // JS calls even though template-level setPin/setSignal statements yield.
-      const result = spawnSync(
-        process.execPath,
-        ['--stack-size=256', joinPath(_dirname, 'helpers', 'function-trigger-runner.js')],
-        { timeout: 30_000, encoding: 'utf8' }
-      );
+      const result = await runHelperWorker('function-trigger-runner.js');
       deepStrictEqual(
         result.status,
         0,
-        `Subprocess crashed (status ${result.status}):\n${result.stderr}`
+        `Worker crashed (status ${result.status}):\n${result.error}`
       );
     }
   );
