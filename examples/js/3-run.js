@@ -11,7 +11,9 @@ const setupJs = zkp.bn254.groth.setup(sumCircuit);
 // Generate using circom_old circuit
 // NOTE: we have this small util to remove dependencies on snarkjs for witness generation
 // 3. generate witness
-const witnessJs = zkpWitness.generateWitness(sumCircuit)(input);
+const witnessJs = zkpWitness.generateWitness(sumCircuit, {
+  unsafeAllowJsEvalCircuit: true,
+})(input);
 //deepStrictEqual(witness0, witnessJs); // -> will fail, because we have different constrains!
 // 4. create proof
 const proofJs = await zkp.bn254.groth.createProof(setupJs.pkey, witnessJs);

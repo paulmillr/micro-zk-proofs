@@ -21,7 +21,7 @@ const N = 1000;
 const INPUT_VALUE = '7';
 
 const circuit = buildDeepChainCircuit(N);
-const result = generateWitness(circuit)({ in: INPUT_VALUE });
+const result = generateWitness(circuit, { unsafeAllowJsEvalCircuit: true })({ in: INPUT_VALUE });
 
 // result[1] is the main.out slot — should equal the input value after passing
 // through all N relay components unchanged.

@@ -1,15 +1,16 @@
-import { describe, should } from '@paulmillr/jsbt/test.js';
+import { bn254 } from '@noble/curves/bn254.js';
+import { describe, it } from '@paulmillr/jsbt/test.js';
 import { deepStrictEqual, throws } from 'node:assert';
 import * as mimcsponge from '../mimcsponge.js';
 
 describe('MiMC Sponge', async () => {
-  should('iv', () => {
+  it('iv', () => {
     deepStrictEqual(
       mimcsponge.getIV().toString(),
       '20726889000739135966540349393715347422209337226408207985583375257700203118924'
     );
   });
-  should('constants', () => {
+  it('constants', () => {
     for (const nRounds of [0, 1])
       throws(() => mimcsponge.getConstants('mimcsponge', nRounds), /expected nRounds >= 2/);
     deepStrictEqual(mimcsponge.getConstants('mimcsponge', 2), [0n, 0n]);
@@ -237,15 +238,31 @@ describe('MiMC Sponge', async () => {
       0n,
     ]);
   });
-  should('hash', () => {
+  it('hash', () => {
     const res = mimcsponge.hash(1n, 2n, 0n);
     deepStrictEqual(res, {
       xL: 18635233944808208882966072806738683940518399005033812161015824420796221493526n,
       xR: 19140941253229475753487820384337024263930106104819057875453076717944303574361n,
     });
   });
-  should('multiHash', () => {
+  it('rejects noncanonical hash lanes and keys', () => {
+    const q = bn254.fields.Fr.ORDER;
+    for (const run of [
+      () => mimcsponge.hash(-1n, 0n, 0n),
+      () => mimcsponge.hash(q, 0n, 0n),
+      () => mimcsponge.hash(0n, -1n, 0n),
+      () => mimcsponge.hash(0n, q, 0n),
+      () => mimcsponge.hash(0n, 0n, -1n),
+      () => mimcsponge.hash(0n, 0n, q),
+      () => mimcsponge.hash(0n, 0n, 1n << 512n),
+    ])
+      throws(run, /expected 0 <= value < Fr\.ORDER/);
+    throws(() => mimcsponge.hash(0n, 0n, '0'), /"k" expected bigint/);
+  });
+  it('multiHash', () => {
     const input = [1n, 2n];
+    for (const key of [undefined, 1n, 2n])
+      throws(() => mimcsponge.multiHash([], key), /"lst" expected at least one field element/);
     throws(() => mimcsponge.multiHash(input, 0n, 0), /expected numOutputs >= 1/);
     deepStrictEqual(
       mimcsponge.multiHash(input, 0n),
@@ -261,6 +278,13 @@ describe('MiMC Sponge', async () => {
     ]);
     deepStrictEqual(input, [1n, 2n]);
   });
+  it('rejects noncanonical multiHash items and keys', () => {
+    const q = bn254.fields.Fr.ORDER;
+    throws(() => mimcsponge.multiHash([-1n]), /"lst\.0" expected 0 <= value < Fr\.ORDER/);
+    throws(() => mimcsponge.multiHash([q]), /"lst\.0" expected 0 <= value < Fr\.ORDER/);
+    throws(() => mimcsponge.multiHash([1n], -1n), /"key" expected 0 <= value < Fr\.ORDER/);
+    throws(() => mimcsponge.multiHash([1n], q), /"key" expected 0 <= value < Fr\.ORDER/);
+  });
 });
 
-should.runWhen(import.meta.url);
+it.runWhen(import.meta.url);

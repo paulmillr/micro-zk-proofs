@@ -2,12 +2,12 @@ import { bn254 } from '@noble/curves/bn254.js';
 import { hexToBytes } from '@noble/curves/utils.js';
 import { keccakprg } from '@noble/hashes/sha3-addons.js';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
-import { describe, should } from '@paulmillr/jsbt/test.js';
+import { describe, it } from '@paulmillr/jsbt/test.js';
 import { deepStrictEqual, throws } from 'node:assert';
-import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join as joinPath } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import * as zkp from '../index.js';
 import * as witness from '../witness.js';
 import { buildDeepChainCircuit, buildDuplicateTriggerCircuit } from './helpers/chain-circuit.js';
@@ -27,6 +27,9 @@ const prg = (seed) => {
   const randomBytes = (len) => p.randomBytes(len);
   return randomBytes;
 };
+
+const unsafeJsEval = { unsafeAllowJsEvalCircuit: true };
+const generateWitness = (circuit) => witness.generateWitness(circuit, unsafeJsEval);
 
 const bigintPatchNames = [
   'eq',
@@ -57,6 +60,30 @@ const restoreBigInt = (state) => {
     else Object.defineProperty(bigintProto, name, desc);
   }
 };
+const runWorker = (filename, options = {}) =>
+  new Promise((resolve) => {
+    const worker = new Worker(filename, { execArgv: [], ...options });
+    let message;
+    let error;
+    const timeout = setTimeout(() => {
+      error = 'worker timed out';
+      worker.terminate();
+    }, 30_000);
+    worker.once('message', (msg) => {
+      message = msg;
+    });
+    worker.once('error', (err) => {
+      error = String(err && err.stack ? err.stack : err);
+    });
+    worker.once('exit', (status) => {
+      clearTimeout(timeout);
+      resolve({ status, message, error });
+    });
+  });
+const runHelperWorker = (name) =>
+  runWorker(pathToFileURL(joinPath(_dirname, 'helpers', name)), {
+    resourceLimits: { stackSizeMb: 0.5 },
+  });
 
 const siblingCircuit = {
   nVars: 6,
@@ -682,6 +709,33 @@ const generatedShiftLeftCircuit = {
   },
 };
 
+const arrayInputCircuit = {
+  nVars: 4,
+  nInputs: 2,
+  nOutputs: 1,
+  nSignals: 4,
+  templates: {
+    Main: `function(ctx) {
+    ctx.setSignal("out", [], bigInt(ctx.getSignal("in", ["0"])).add(bigInt(ctx.getSignal("in", ["1"]))).mod(__P__));
+}
+`,
+  },
+  functions: {},
+  components: [{ name: 'main', params: {}, template: 'Main', inputSignals: 2 }],
+  signals: [
+    { names: ['one'], triggerComponents: [] },
+    { names: ['main.out'], triggerComponents: [] },
+    { names: ['main.in[0]'], triggerComponents: [0] },
+    { names: ['main.in[1]'], triggerComponents: [0] },
+  ],
+  signalName2Idx: {
+    one: 0,
+    'main.out': 1,
+    'main.in[0]': 2,
+    'main.in[1]': 3,
+  },
+};
+
 const generatedAssertPathTokenCircuit = {
   nVars: 3,
   nInputs: 1,
@@ -711,11 +765,27 @@ const generatedAssertPathTokenCircuit = {
 //const groth16 = zkp.buildSnark(bn254, { unsafePreserveToxic: true }).groth;
 
 describe('Witness', () => {
-  should('generateWitness restores BigInt prototype patches', () => {
+  it('generateWitness requires explicit opt-in before evaluating circuit JavaScript', () => {
+    const marker = '__microZkWitnessEvalExecuted';
+    delete globalThis[marker];
+    const circuit = {
+      ...sumCircuit,
+      templates: {
+        Main: `(globalThis.${marker} = true, function(ctx) {})`,
+      },
+    };
+    try {
+      throws(() => witness.generateWitness(circuit), /unsafeAllowJsEvalCircuit/);
+      deepStrictEqual(globalThis[marker], undefined);
+    } finally {
+      delete globalThis[marker];
+    }
+  });
+  it('generateWitness restores BigInt prototype patches', () => {
     const before = snapBigInt();
     const preserved = function preservedAdd() {};
     try {
-      const gen = witness.generateWitness(sumCircuit);
+      const gen = generateWitness(sumCircuit);
       for (const value of [preserved, undefined, { get: () => undefined, configurable: true }]) {
         if (typeof value === 'object') Object.defineProperty(bigintProto, 'add', value);
         else bigintProto.add = value;
@@ -729,76 +799,15 @@ describe('Witness', () => {
       restoreBigInt(before);
     }
   });
-  should('generateWitness fails cleanly when BigInt patching is impossible', () => {
-    const script = `
-      import { generateWitness } from './witness.js';
-      const methods = ${JSON.stringify(bigintPatchNames)};
-      const circuit = {
-        nVars: 2,
-        nInputs: 0,
-        nOutputs: 1,
-        nSignals: 2,
-        templates: { Main: 'function(ctx) { ctx.setSignal("out", [], "1"); }' },
-        functions: {},
-        components: [{ name: 'main', params: {}, template: 'Main', inputSignals: 0 }],
-        signals: [
-          { names: ['one'], triggerComponents: [] },
-          { names: ['main.out'], triggerComponents: [] },
-        ],
-        signalName2Idx: { one: 0, 'main.out': 1 },
-      };
-      const same = (a, b) =>
-        (!a && !b) ||
-        (a &&
-          b &&
-          a.configurable === b.configurable &&
-          a.enumerable === b.enumerable &&
-          a.writable === b.writable &&
-          a.value === b.value &&
-          a.get === b.get &&
-          a.set === b.set);
-      const before = Object.fromEntries(
-        methods.map((name) => [name, Object.getOwnPropertyDescriptor(BigInt.prototype, name)])
-      );
-      Object.defineProperty(BigInt.prototype, 'shl', {
-        configurable: false,
-        value() {
-          return 123n;
-        },
-      });
-      try {
-        generateWitness(circuit)({});
-        console.error('unexpected success');
-        process.exit(1);
-      } catch (err) {
-        if (!String(err && err.message).includes('shl')) {
-          console.error(String(err && err.stack ? err.stack : err));
-          process.exit(1);
-        }
-      }
-      for (const name of methods) {
-        if (name === 'shl') continue;
-        if (!same(before[name], Object.getOwnPropertyDescriptor(BigInt.prototype, name))) {
-          console.error('leaked ' + name);
-          process.exit(1);
-        }
-      }
-      console.log('ok');
-    `;
-    const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
-      cwd: joinPath(_dirname, '..'),
-      encoding: 'utf8',
+  it('generateWitness fails cleanly when BigInt patching is impossible', async () => {
+    const helper = pathToFileURL(joinPath(_dirname, 'helpers', 'bigint-patch-runner.js'));
+    deepStrictEqual(await runWorker(helper), {
+      status: 0,
+      message: 'ok',
+      error: undefined,
     });
-    deepStrictEqual(
-      { status: res.status, stdout: res.stdout.trim(), stderr: res.stderr.trim() },
-      {
-        status: 0,
-        stdout: 'ok',
-        stderr: '',
-      }
-    );
   });
-  should('yieldCtxCalls yields only executable scheduler ctx calls', () => {
+  it('yieldCtxCalls yields only executable scheduler ctx calls', () => {
     deepStrictEqual(
       witness.__TESTS.yieldCtxCalls(`function(ctx) {
     ctx.setSignal("out", [], ctx.getSignal("in", []));
@@ -814,7 +823,7 @@ describe('Witness', () => {
 `
     );
   });
-  should('yieldCtxCalls leaves strings and comments unchanged', () => {
+  it('yieldCtxCalls leaves strings and comments unchanged', () => {
     deepStrictEqual(
       witness.__TESTS.yieldCtxCalls(`function(ctx) {
     const quoted = "ctx.setSignal('x') and ctx.callFunction(\\"f\\")";
@@ -840,7 +849,7 @@ describe('Witness', () => {
 `
     );
   });
-  should('yieldCtxCalls requires real ctx identifier boundaries', () => {
+  it('yieldCtxCalls requires real ctx identifier boundaries', () => {
     deepStrictEqual(
       witness.__TESTS.yieldCtxCalls(`function(ctx) {
     myctx.setSignal("out", [], "1");
@@ -858,8 +867,8 @@ describe('Witness', () => {
 `
     );
   });
-  should('generateWitness reads own input fields only', () => {
-    const gen = witness.generateWitness(sumCircuit);
+  it('generateWitness reads own input fields only', () => {
+    const gen = generateWitness(sumCircuit);
     const expected = [1n, 67n, 34n, 33n];
     deepStrictEqual(gen({ a: '33', b: '34' }).slice(0, 4), expected);
     const inheritedExtra = Object.assign(Object.create({ extra: '99' }), { a: '33', b: '34' });
@@ -867,59 +876,163 @@ describe('Witness', () => {
     const inheritedRequired = Object.assign(Object.create({ b: '34' }), { a: '33' });
     throws(() => gen(inheritedRequired), /Input Signal not assigned:/);
   });
-  should('generateWitness preserves sibling component reads after setPin', () => {
-    const gen = witness.generateWitness(siblingCircuit);
+  it('generateWitness accepts each declared structured input exactly once', () => {
+    const gen = generateWitness(arrayInputCircuit);
+    deepStrictEqual(gen({ in: ['20', '22'] }), [1n, 42n, 20n, 22n]);
+    throws(
+      () => gen({ in: ['20', '22'], 'in[0]': '20' }),
+      /^Error: Input assigned twice: main\.in\[0\]$/
+    );
+    throws(() => gen({ in: ['20'] }), /Input Signal not assigned: main\.in\[1\]/);
+  });
+  it('generateWitness rejects sparse, oversized, and cyclic input arrays', () => {
+    const gen = generateWitness(arrayInputCircuit);
+    const huge = [];
+    huge.length = 0xffffffff;
+    throws(() => gen({ in: huge }), /Witness input exceeds configured node limit 1024/);
+
+    const sparse = ['20'];
+    sparse.length = 2;
+    throws(() => gen({ in: sparse }), /Sparse witness input array/);
+
+    const cyclic = [];
+    cyclic.push(cyclic, '22');
+    throws(() => gen({ in: cyclic }), /Cyclic witness input array/);
+  });
+  it('generateWitness supports explicit input-shape limit overrides', () => {
+    const depth = 65;
+    const selectors = Array(depth).fill('0');
+    const selectorSuffix = selectors.map((selector) => `[${selector}]`).join('');
+    const circuit = {
+      nVars: 3,
+      nInputs: 1,
+      nOutputs: 1,
+      nSignals: 3,
+      templates: {
+        Main: `function(ctx) {
+    ctx.setSignal("out", [], ctx.getSignal("in", ${JSON.stringify(selectors)}));
+}
+`,
+      },
+      functions: {},
+      components: [{ name: 'main', params: {}, template: 'Main', inputSignals: 1 }],
+      signals: [
+        { names: ['one'], triggerComponents: [] },
+        { names: ['main.out'], triggerComponents: [] },
+        { names: [`main.in${selectorSuffix}`], triggerComponents: [0] },
+      ],
+      signalName2Idx: {
+        one: 0,
+        'main.out': 1,
+        [`main.in${selectorSuffix}`]: 2,
+      },
+    };
+    let input = '7';
+    for (let i = 0; i < depth; i++) input = [input];
+
+    const defaultGen = generateWitness(circuit);
+    throws(() => defaultGen({ in: input }), /Witness input exceeds configured depth limit 64/);
+    const overriddenGen = witness.generateWitness(circuit, {
+      ...unsafeJsEval,
+      inputLimits: { maxDepth: depth },
+    });
+    deepStrictEqual(overriddenGen({ in: input }), [1n, 7n, 7n]);
+
+    const nodeLimitedGen = witness.generateWitness(arrayInputCircuit, {
+      ...unsafeJsEval,
+      inputLimits: { maxNodes: 2 },
+    });
+    throws(
+      () => nodeLimitedGen({ in: ['20', '22'] }),
+      /Witness input exceeds configured node limit 2/
+    );
+  });
+  it('generateWitness rejects output and internal-signal input keys before execution', () => {
+    const marker = '__microZkWitnessInputExecuted';
+    delete globalThis[marker];
+    const circuit = {
+      ...generatedShiftLeftCircuit,
+      templates: {
+        Main: `function(ctx) {
+    globalThis.${marker} = true;
+    ctx.setSignal("out", [], ctx.getSignal("in", []));
+}
+`,
+      },
+    };
+    const gen = generateWitness(circuit);
+    try {
+      throws(() => gen({ in: '10', out: '999' }), /^Error: Unknown input signal: main\.out$/);
+      deepStrictEqual(globalThis[marker], undefined);
+      throws(
+        () => generateWitness(sumCircuit)({ a: '33', b: '34', 'n2ba.out[0]': '999' }),
+        /^Error: Unknown input signal: main\.n2ba\.out\[0\]$/
+      );
+    } finally {
+      delete globalThis[marker];
+    }
+  });
+  it('generateWitness rejects duplicate aliases of a declared input', () => {
+    const gen = generateWitness(sumCircuit);
+    throws(
+      () => gen({ a: '33', b: '34', 'n2ba.in': '33' }),
+      /^Error: Input assigned twice: main\.n2ba\.in$/
+    );
+    deepStrictEqual(gen({ 'n2ba.in': '33', b: '34' }).slice(0, 4), [1n, 67n, 34n, 33n]);
+  });
+  it('generateWitness preserves sibling component reads after setPin', () => {
+    const gen = generateWitness(siblingCircuit);
     deepStrictEqual(gen({ in: '10' }), [1n, 12n, 10n, 10n, 11n, 12n]);
   });
-  should('generateWitness preserves circom 0.0.35 output-backedge ordering', () => {
-    const gen = witness.generateWitness(generatedOutputBackedgeCircuit);
+  it('generateWitness preserves circom 0.0.35 output-backedge ordering', () => {
+    const gen = generateWitness(generatedOutputBackedgeCircuit);
     deepStrictEqual(gen({ in: '10' }), [1n, 12n, 10n]);
   });
-  should('generateWitness preserves circom 0.0.35 parent-first backedge ordering', () => {
-    const gen = witness.generateWitness(generatedParentFirstBackedgeCircuit);
+  it('generateWitness preserves circom 0.0.35 parent-first backedge ordering', () => {
+    const gen = generateWitness(generatedParentFirstBackedgeCircuit);
     deepStrictEqual(gen({ in: '10' }), [1n, 25n, 10n]);
   });
-  should('generateWitness preserves circom 0.0.35 depth-first overwrite ordering', () => {
-    const gen = witness.generateWitness(generatedDepthBreadthOverwriteCircuit);
+  it('generateWitness preserves circom 0.0.35 depth-first overwrite ordering', () => {
+    const gen = generateWitness(generatedDepthBreadthOverwriteCircuit);
     deepStrictEqual(gen({ in: '10' }), [1n, 11n, 10n]);
   });
-  should('generateWitness preserves circom 0.0.35 parent overwrite after child ordering', () => {
-    const gen = witness.generateWitness(generatedParentOverwriteChildOutputCircuit);
+  it('generateWitness preserves circom 0.0.35 parent overwrite after child ordering', () => {
+    const gen = generateWitness(generatedParentOverwriteChildOutputCircuit);
     deepStrictEqual(gen({ in: '10' }), [1n, 10n, 10n]);
   });
-  should('generateWitness preserves circom 0.0.35 array parent overwrite ordering', () => {
-    const gen = witness.generateWitness(generatedArrayParentOverwriteCircuit);
+  it('generateWitness preserves circom 0.0.35 array parent overwrite ordering', () => {
+    const gen = generateWitness(generatedArrayParentOverwriteCircuit);
     deepStrictEqual(gen({ in: '10' }), [1n, 10n, 10n, 11n, 13n]);
   });
-  should('generateWitness preserves circom 0.0.35 for-step child trigger ordering', () => {
-    const gen = witness.generateWitness(generatedForStepChildTriggerCircuit);
+  it('generateWitness preserves circom 0.0.35 for-step child trigger ordering', () => {
+    const gen = generateWitness(generatedForStepChildTriggerCircuit);
     deepStrictEqual(gen({ in: '10' }), [1n, 10n, 10n]);
   });
-  should('generateWitness preserves circom 0.0.35 function child trigger ordering', () => {
-    const gen = witness.generateWitness(generatedFunctionChildTriggerLateAliasCircuit);
+  it('generateWitness preserves circom 0.0.35 function child trigger ordering', () => {
+    const gen = generateWitness(generatedFunctionChildTriggerLateAliasCircuit);
     deepStrictEqual(gen({ in: '10' }), [1n, 10n, 10n, 10n]);
   });
-  should('generateWitness supports circom 0.0.35 shift-left output', () => {
-    const gen = witness.generateWitness(generatedShiftLeftCircuit);
+  it('generateWitness supports circom 0.0.35 shift-left output', () => {
+    const gen = generateWitness(generatedShiftLeftCircuit);
     deepStrictEqual(gen({ in: '5' }), [1n, 40n, 5n]);
   });
-  should('generateWitness preserves circom 0.0.35 assertion path strings', () => {
-    const gen = witness.generateWitness(generatedAssertPathTokenCircuit);
+  it('generateWitness preserves circom 0.0.35 assertion path strings', () => {
+    const gen = generateWitness(generatedAssertPathTokenCircuit);
     throws(
       () => gen({ in: '10' }),
       /^Error: Constraint doesn't match main: \/tmp\/ctx\.setSignal\(\/ctx\.setPin\(\/ctx\.callFunction\(\/case\.circom:6:4 -> 10 != 11$/
     );
   });
-  should('generateWitness handles duplicate aliased trigger components once', () => {
+  it('generateWitness handles duplicate aliased trigger components once', () => {
     const circuit = buildDuplicateTriggerCircuit(5, 4);
     deepStrictEqual(
       circuit.signals[3].triggerComponents,
       [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5]
     );
-    const gen = witness.generateWitness(circuit);
+    const gen = generateWitness(circuit);
     deepStrictEqual(gen({ in: '7' }), [1n, 7n, 7n, 7n]);
   });
-  should('R1CS', () => {
+  it('R1CS', () => {
     const data = Uint8Array.from(readFileSync(joinPath(_dirname, './vectors/sum_test.r1cs')));
     const coder = witness.getCoders(bn254).R1CS; // We need to pass fields because it depends on bytesize of order
     const decoded = coder.decode(data);
@@ -961,7 +1074,90 @@ describe('Witness', () => {
     for (const key of ['', '01', '1.0', '0x10', ' 1', '1e2', '4294967296'])
       throws(() => coder.encode(invalidKeyR1CS(key)), /expected uint32 constraint key/);
   });
-  should('binary witness', () => {
+  it('R1CS rejects inconsistent metadata before setup', () => {
+    const data = Uint8Array.from(readFileSync(joinPath(_dirname, './vectors/sum_test.r1cs')));
+    const coders = witness.getCoders(bn254);
+    const invalid = (mutate) => {
+      const raw = coders.R1CS.decode(data);
+      mutate(raw);
+      return coders.R1CS.encode(raw);
+    };
+    const section = (raw, tag) => raw.sections.find((item) => item.TAG === tag);
+
+    throws(() => coders.getCircuitInfo(invalid((raw) => (raw.version = 2))), /unsupported version/);
+    throws(
+      () => coders.getCircuitInfo(invalid((raw) => raw.sections.push(section(raw, 'header')))),
+      /duplicate header section/
+    );
+    throws(
+      () =>
+        coders.getCircuitInfo(
+          invalid((raw) => {
+            raw.sections = raw.sections.filter((item) => item.TAG !== 'wire2label');
+          })
+        ),
+      /cannot find wire2label/
+    );
+    throws(
+      () =>
+        coders.getCircuitInfo(
+          invalid((raw) => {
+            section(raw, 'header').data.nWires = 0xfffffffe;
+          })
+        ),
+      /wire count exceeds configured limit/
+    );
+    throws(
+      () =>
+        coders.getCircuitInfo(
+          invalid((raw) => {
+            section(raw, 'header').data.mConstraints++;
+          })
+        ),
+      /expected 102 constraints, got 101/
+    );
+    throws(
+      () =>
+        coders.getCircuitInfo(
+          invalid((raw) => {
+            section(raw, 'wire2label').data.pop();
+          })
+        ),
+      /expected 101 wire labels, got 100/
+    );
+    throws(
+      () =>
+        coders.getCircuitInfo(
+          invalid((raw) => {
+            const header = section(raw, 'header').data;
+            header.nPrvIn = header.nWires;
+          })
+        ),
+      /public\/private signal counts exceed wire count/
+    );
+    throws(
+      () =>
+        coders.getCircuitInfo(
+          invalid((raw) => {
+            const header = section(raw, 'header').data;
+            section(raw, 'constraint').data[0][0][header.nWires] = 1n;
+          })
+        ),
+      /wire index out of range/
+    );
+    throws(
+      () =>
+        coders.getCircuitInfo(
+          invalid((raw) => raw.sections.push({ TAG: 'customGatesList', data: Uint8Array.of(1) }))
+        ),
+      /unsupported nonempty customGatesList/
+    );
+    throws(
+      () => witness.getCoders(bn254, { maxBytes: data.length - 1 }).getCircuitInfo(data),
+      /exceeds configured byte limit/
+    );
+  });
+  it('binary witness', () => {
     const data = hexToBytes(DATA_1);
 
     const coder = witness.getCoders(bn254).binWitness;
@@ -972,7 +1168,7 @@ describe('Witness', () => {
       decoded.split(',').map((n) => BigInt(n))
     );
   });
-  should('WTNS', () => {
+  it('WTNS', () => {
     const data = hexToBytes(DATA_2);
     const decoded2 =
       '1,67,33,34,1,1,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0';
@@ -995,7 +1191,7 @@ describe('Witness', () => {
       ],
     });
   });
-  should('section length encoders', () => {
+  it('section length encoders', () => {
     const { R1CS, WTNS, ZKeyRaw } = witness.getCoders(bn254);
     const wtns = hexToBytes(DATA_2);
     deepStrictEqual(WTNS.encode(WTNS.decode(wtns)), wtns);
@@ -1023,7 +1219,7 @@ describe('Witness', () => {
     };
     deepStrictEqual(R1CS.decode(R1CS.encode(emptyR1CS)), emptyR1CS);
   });
-  should('ZKey', () => {
+  it('ZKey', () => {
     // NOTE: keys extracted from deterministic tests in snarkjs v0.7.5 (fullproccess.js)
     const data = Uint8Array.from(readFileSync(joinPath(_dirname, './vectors/keys/zkey0.zkey')));
     // json exported via 'snarkjs zkey export json' to verify we are parsing correctly
@@ -1090,7 +1286,73 @@ describe('Witness', () => {
     deepStrictEqual(parsed.json, json);
   });
 
-  should('ZKey process', async () => {
+  it('ZKey rejects inconsistent metadata before point conversion', () => {
+    const data = Uint8Array.from(readFileSync(joinPath(_dirname, './vectors/keys/zkey0.zkey')));
+    const coders = witness.getCoders(bn254);
+    const invalid = (mutate) => {
+      const raw = coders.ZKeyRaw.decode(data);
+      mutate(raw);
+      return coders.ZKeyRaw.encode(raw);
+    };
+    const section = (raw, tag) => raw.sections.find((item) => item.TAG === tag);
+
+    throws(() => coders.parseZKey(invalid((raw) => (raw.version = 2))), /unsupported version/);
+    throws(
+      () => coders.parseZKey(invalid((raw) => raw.sections.push(section(raw, 'IC')))),
+      /duplicate IC section/
+    );
+    throws(
+      () =>
+        coders.parseZKey(
+          invalid((raw) => {
+            section(raw, 'headerGroth').data.nPublic = 0xfffffffe;
+          })
+        ),
+      /invalid variable\/public counts/
+    );
+    throws(
+      () =>
+        coders.parseZKey(
+          invalid((raw) => {
+            section(raw, 'headerGroth').data.domainSize = 1023;
+          })
+        ),
+      /domainSize must be a power of two/
+    );
+    throws(
+      () =>
+        coders.parseZKey(
+          invalid((raw) => {
+            section(raw, 'headerGroth').data.q = 1n;
+          })
+        ),
+      /field mismatch/
+    );
+    throws(
+      () =>
+        coders.parseZKey(
+          invalid((raw) => {
+            section(raw, 'A').data.pop();
+          })
+        ),
+      /expected A.length/
+    );
+    throws(
+      () =>
+        coders.parseZKey(
+          invalid((raw) => {
+            section(raw, 'ccoefs').data[0].matrix = 3;
+          })
+        ),
+      /invalid coefficient index/
+    );
+    throws(
+      () => witness.getCoders(bn254, { maxVariables: 100 }).parseZKey(data),
+      /variable count exceeds configured limit/
+    );
+  });
+
+  it('ZKey process', async () => {
     const groth16 = zkp.buildSnark(bn254, { unsafePreserveToxic: true }).groth;
     const { parseZKey, WTNS, ZKeyRaw, ZKeyRaw2 } = witness.getCoders(bn254);
     const data = Uint8Array.from(
@@ -1136,69 +1398,34 @@ describe('Witness', () => {
   // These tests exercise the queue-based component-drain introduced to prevent
   // call-stack overflow on circuits with long inter-template chains.
 
-  should('deep relay chain: correct output for small N', () => {
+  it('deep relay chain: correct output for small N', () => {
     // Functional sanity check: a 10-component relay chain passes the input value
     // through unchanged.  result[1] is the main.out slot.
-    const gen = witness.generateWitness(buildDeepChainCircuit(10));
+    const gen = generateWitness(buildDeepChainCircuit(10));
     deepStrictEqual(gen({ in: '42' })[1], 42n);
   });
 
-  should(
-    'deep relay chain: no stack overflow under reduced stack size (N=1000, stack=256kB)',
-    () => {
-      // Spawn a subprocess with --stack-size=256 (256 kB).  Under the old synchronous-
-      // recursion approach 1000 triggerComponent frames would exceed that budget and
-      // crash with "Maximum call stack size exceeded".  The queue-based drain must
-      // process all components iteratively and exit 0.
-      const result = spawnSync(
-        process.execPath,
-        ['--stack-size=256', joinPath(_dirname, 'helpers', 'deep-chain-runner.js')],
-        { timeout: 30_000, encoding: 'utf8' }
-      );
-      deepStrictEqual(
-        result.status,
-        0,
-        `Subprocess crashed (status ${result.status}):\n${result.stderr}`
-      );
-    }
-  );
-  should(
-    'nested direct-child chain: no stack overflow under reduced stack size (N=200, stack=256kB)',
-    () => {
-      // Old circom 0.0.35 can emit direct nested child component hierarchies.
-      // The scheduler must preserve immediate child-before-parent-continuation
-      // ordering without implementing it as normal recursive JS calls.
-      const result = spawnSync(
-        process.execPath,
-        ['--stack-size=256', joinPath(_dirname, 'helpers', 'nested-direct-runner.js')],
-        { timeout: 30_000, encoding: 'utf8' }
-      );
-      deepStrictEqual(
-        result.status,
-        0,
-        `Subprocess crashed (status ${result.status}):\n${result.stderr}`
-      );
-    }
-  );
-  should(
-    'function-triggered child chain: no stack overflow under reduced stack size (N=500, stack=256kB)',
-    () => {
-      // Old circom 0.0.35 can emit ctx.setSignal from generated functions. If
-      // function-triggered child work is drained from inside the caller's active
-      // generator step, a nested component hierarchy can still recurse through
-      // JS calls even though template-level setPin/setSignal statements yield.
-      const result = spawnSync(
-        process.execPath,
-        ['--stack-size=256', joinPath(_dirname, 'helpers', 'function-trigger-runner.js')],
-        { timeout: 30_000, encoding: 'utf8' }
-      );
-      deepStrictEqual(
-        result.status,
-        0,
-        `Subprocess crashed (status ${result.status}):\n${result.stderr}`
-      );
-    }
-  );
+  it('deep relay chain: no stack overflow under reduced stack size (N=1000, stack=256kB)', async () => {
+    // Use a worker isolate with a reduced stack. Under the old synchronous-recursion
+    // approach 1000 triggerComponent frames would exceed this budget.
+    const result = await runHelperWorker('deep-chain-runner.js');
+    deepStrictEqual(result.status, 0, `Worker crashed (status ${result.status}):\n${result.error}`);
+  });
+  it('nested direct-child chain: no stack overflow under reduced stack size (N=200, stack=256kB)', async () => {
+    // Old circom 0.0.35 can emit direct nested child component hierarchies.
+    // The scheduler must preserve immediate child-before-parent-continuation
+    // ordering without implementing it as normal recursive JS calls.
+    const result = await runHelperWorker('nested-direct-runner.js');
+    deepStrictEqual(result.status, 0, `Worker crashed (status ${result.status}):\n${result.error}`);
+  });
+  it('function-triggered child chain: no stack overflow under reduced stack size (N=500, stack=256kB)', async () => {
+    // Old circom 0.0.35 can emit ctx.setSignal from generated functions. If
+    // function-triggered child work is drained from inside the caller's active
+    // generator step, a nested component hierarchy can still recurse through
+    // JS calls even though template-level setPin/setSignal statements yield.
+    const result = await runHelperWorker('function-trigger-runner.js');
+    deepStrictEqual(result.status, 0, `Worker crashed (status ${result.status}):\n${result.error}`);
+  });
 });
 
-should.runWhen(import.meta.url);
+it.runWhen(import.meta.url);

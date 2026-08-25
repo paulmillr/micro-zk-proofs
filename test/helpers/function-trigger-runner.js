@@ -11,7 +11,7 @@ const N = 500;
 const INPUT_VALUE = '7';
 
 const circuit = buildFunctionTriggeredChildCircuit(N);
-const result = generateWitness(circuit)({ in: INPUT_VALUE });
+const result = generateWitness(circuit, { unsafeAllowJsEvalCircuit: true })({ in: INPUT_VALUE });
 
 if (result[1] !== BigInt(INPUT_VALUE)) {
   process.stderr.write(`Wrong output: expected ${INPUT_VALUE}n, got ${result[1]}\n`);

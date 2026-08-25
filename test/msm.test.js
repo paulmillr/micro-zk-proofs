@@ -1,8 +1,8 @@
 import { bn254 } from '@noble/curves/bn254.js';
 import { keccakprg } from '@noble/hashes/sha3-addons.js';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
-import { describe, should } from '@paulmillr/jsbt/test.js';
-import { deepStrictEqual } from 'node:assert';
+import { describe, it } from '@paulmillr/jsbt/test.js';
+import { deepStrictEqual, rejects } from 'node:assert';
 import * as zkp from '../index.js';
 import * as msm from '../msm.js';
 import { generateWitness } from '../witness.js';
@@ -16,7 +16,7 @@ const prg = (seed) => {
 };
 
 describe('MSM', () => {
-  should('Basic', async () => {
+  it('Basic', async () => {
     const { methods, terminate } = msm.initMSM();
     const res = await methods.bn254_msmG1([
       { scalar: 1n, point: bn254.G1.Point.BASE },
@@ -26,14 +26,63 @@ describe('MSM', () => {
     terminate();
   });
 
+  it('supports opt-in side-channel hardening', async () => {
+    const calls = [];
+    const backend = async (input) => {
+      calls.push(input);
+      return bn254.G1.Point.ZERO;
+    };
+    const points = [bn254.G1.Point.BASE, bn254.G1.Point.BASE];
+    const scalars = [0n, 1n];
+
+    const optimized = msm.modifyArgs(bn254.fields.Fr, bn254.G1.Point, backend);
+    await optimized(points, scalars);
+    deepStrictEqual(
+      calls[0].map(({ scalar }) => scalar),
+      [1n]
+    );
+
+    const hardened = msm.modifyArgs(bn254.fields.Fr, bn254.G1.Point, backend, {
+      hardenSideChannel: true,
+    });
+    await hardened(points, scalars);
+    deepStrictEqual(
+      calls[1].map(({ scalar }) => scalar),
+      [0n, 1n]
+    );
+    await rejects(() => hardened(points, [0n, bn254.fields.Fr.ORDER]), /invalid scalar at index 1/);
+  });
+
   // TODO: split benchmarking into separate test/bench.ts file
-  should('proof', async () => {
+  it('proof', async () => {
     const randomBytesSetup = prg('groth16-setup');
     const { methods, terminate } = msm.initMSM();
 
     const groth16 = zkp.buildSnark(bn254).groth;
     const setup = groth16.setup(circuitSum, randomBytesSetup);
-    const witness = generateWitness(circuitSum)({ a: '33', b: '34' });
+    const witness = generateWitness(circuitSum, { unsafeAllowJsEvalCircuit: true })({
+      a: '33',
+      b: '34',
+    });
+    const zeroWitness = generateWitness(circuitSum, { unsafeAllowJsEvalCircuit: true })({
+      a: '0',
+      b: '0',
+    });
+    const hardenedInputs = [];
+    const hardenedGroth = zkp.buildSnark(bn254, {
+      G1msm: async (input) => {
+        hardenedInputs.push(input.map(({ scalar }) => scalar));
+        return bn254.G1.Point.ZERO;
+      },
+      G2msm: async (input) => {
+        hardenedInputs.push(input.map(({ scalar }) => scalar));
+        return bn254.G2.Point.ZERO;
+      },
+      hardenSideChannel: true,
+    }).groth;
+    await hardenedGroth.createProof(setup.pkey, zeroWitness, prg('groth16-hardened-proof'));
+    deepStrictEqual(hardenedInputs[0], zeroWitness);
+
     const randomBytesProof1 = prg('groth16-proof');
 
     let start = Date.now();
@@ -61,4 +110,4 @@ describe('MSM', () => {
   });
 });
 
-should.runWhen(import.meta.url);
+it.runWhen(import.meta.url);
