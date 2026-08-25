@@ -15,6 +15,7 @@ import { abytes, type TArg, type TRet } from '@noble/hashes/utils.js';
 const Fp = babyjubjub.Point.Fp;
 const _0n = /* @__PURE__ */ BigInt(0);
 const _1n = /* @__PURE__ */ BigInt(1);
+const MAX_CACHED_POINTS = 256;
 
 type EdwardsPoint = typeof babyjubjub.Point.BASE;
 type PointCodec = {
@@ -70,12 +71,9 @@ export const Point: TRet<PointCodec> = Object.freeze({
   },
 }) as unknown as TRet<PointCodec>;
 
-// We cannot do nice precomputes here since input can be unlimited in size
-let POINT_CACHE: EdwardsPoint[] = [];
-function basePoint(idx: number) {
-  // pedersenHash() requests generators in ascending index order,
-  // so sparse cache holes are not observed here.
-  if (idx < POINT_CACHE.length) return POINT_CACHE[idx];
+// Cache common generators while keeping attacker-selected message lengths out of persistent state.
+const POINT_CACHE: EdwardsPoint[] = [];
+function deriveBasePoint(idx: number) {
   let p = undefined;
   for (let i = 0; !p; i++) {
     const s = `PedersenGenerator_${('' + idx).padStart(32, '0')}_${('' + i).padStart(32, '0')}`;
@@ -87,9 +85,19 @@ function basePoint(idx: number) {
   }
   p = p.clearCofactor();
   p.assertValidity();
-  POINT_CACHE[idx] = p;
   return p;
 }
+function basePoint(idx: number) {
+  if (idx >= MAX_CACHED_POINTS) return deriveBasePoint(idx);
+  return (POINT_CACHE[idx] ??= deriveBasePoint(idx));
+}
+
+/** Test hooks for checking bounded module state. */
+export const __TESTS: Readonly<{ maxCachedPoints: number; pointCacheSize: () => number }> =
+  /* @__PURE__ */ Object.freeze({
+    maxCachedPoints: MAX_CACHED_POINTS,
+    pointCacheSize: (): number => POINT_CACHE.length,
+  });
 
 function getScalars(msg: TArg<Uint8Array>) {
   // noble-curves now exposes BabyJubJub's subgroup base and subgroup order directly.
@@ -123,6 +131,8 @@ function getScalars(msg: TArg<Uint8Array>) {
 
 /**
  * Computes the Pedersen hash for the input bytes.
+ * The first 256 message-block generators are cached; higher generators are derived per call.
+ * Applications should separately bound attacker-controlled message lengths for latency.
  * @param msg - Message bytes to hash.
  * @returns Encoded babyjubjub point bytes.
  * @example

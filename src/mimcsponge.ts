@@ -58,12 +58,31 @@ export function getConstants(seed: string = SEED, nRounds: number = NROUNDS): bi
 }
 const CONSTANTS = /* @__PURE__ */ getConstants(SEED, NROUNDS);
 
+function assertField(name: string, value: unknown): asserts value is bigint {
+  if (typeof value !== 'bigint')
+    throw new TypeError(`"${name}" expected bigint, got type=${typeof value}`);
+  if (!Fr.isValid(value)) throw new RangeError(`"${name}" expected 0 <= value < Fr.ORDER`);
+}
+
+function hashInternal(L: bigint, R: bigint, k: bigint): { xL: bigint; xR: bigint } {
+  for (let i = 0; i < NROUNDS; i++) {
+    const t = i == 0 ? Fr.add(L, k) : Fr.add(Fr.add(L, k), CONSTANTS[i]);
+    const tmp = Fr.add(R, Fr.pow(t, BigInt(5)));
+    if (i < NROUNDS - 1) {
+      R = L;
+      L = tmp;
+    } else R = tmp;
+  }
+  return { xL: L, xR: R };
+}
+
 /**
  * Runs one MiMC sponge hash round sequence.
  * @param L - Left input lane.
  * @param R - Right input lane.
  * @param k - Key value.
  * @returns Updated left and right lanes.
+ * @throws If a lane or key is not a canonical field element.
  * @example
  * Run one MiMC round sequence on two field elements with an optional key.
  * ```ts
@@ -72,15 +91,10 @@ const CONSTANTS = /* @__PURE__ */ getConstants(SEED, NROUNDS);
  * ```
  */
 export function hash(L: bigint, R: bigint, k: bigint): { xL: bigint; xR: bigint } {
-  for (let i = 0; i < NROUNDS; i++) {
-    const t = i == 0 ? Fr.addN(L, k) : Fr.addN(Fr.addN(L, k), CONSTANTS[i]);
-    const tmp = Fr.addN(R, Fr.pow(t, BigInt(5)));
-    if (i < NROUNDS - 1) {
-      R = L;
-      L = tmp;
-    } else R = tmp;
-  }
-  return { xL: Fr.create(L), xR: Fr.create(R) };
+  assertField('L', L);
+  assertField('R', R);
+  assertField('k', k);
+  return hashInternal(L, R, k);
 }
 
 /**
@@ -89,7 +103,7 @@ export function hash(L: bigint, R: bigint, k: bigint): { xL: bigint; xR: bigint 
  * @param key - Optional key value.
  * @param numOutputs - Number of outputs to squeeze; must be at least one.
  * @returns One field element or an array of field elements.
- * @throws If `numOutputs` is not an integer at least 1. {@link Error}
+ * @throws If the list is empty, an item or key is not canonical, or `numOutputs` is invalid.
  * @example
  * Hash one or more field elements and optionally squeeze multiple outputs.
  * ```ts
@@ -98,23 +112,17 @@ export function hash(L: bigint, R: bigint, k: bigint): { xL: bigint; xR: bigint 
  */
 export function multiHash(lst: bigint[], key: bigint = Fr.ZERO, numOutputs = 1): bigint | bigint[] {
   if (!Array.isArray(lst)) throw new TypeError('"lst" expected array, got type=' + typeof lst);
-  for (let i = 0; i < lst.length; i++) {
-    const item = lst[i];
-    if (typeof item !== 'bigint')
-      throw new TypeError(`"lst.${i}" expected bigint, got type=${typeof item}`);
-  }
-  if (typeof key !== 'bigint')
-    throw new TypeError('"key" expected bigint, got type=' + typeof key);
+  if (lst.length === 0) throw new RangeError('"lst" expected at least one field element');
+  for (let i = 0; i < lst.length; i++) assertField(`lst.${i}`, lst[i]);
+  assertField('key', key);
   anumber(numOutputs, 'numOutputs');
   // Preserve the historical phrase; tests and callers match this error text.
-  if (numOutputs < 1)
-    throw new RangeError(`expected numOutputs >= 1, got ${numOutputs}`);
+  if (numOutputs < 1) throw new RangeError(`expected numOutputs >= 1, got ${numOutputs}`);
   let R = Fr.ZERO;
   let C = Fr.ZERO;
-  for (let i = 0; i < lst.length; i++)
-    ({ xL: R, xR: C } = hash(Fr.addN(R, BigInt(lst[i])), C, key));
+  for (let i = 0; i < lst.length; i++) ({ xL: R, xR: C } = hashInternal(Fr.add(R, lst[i]), C, key));
   const out = [R];
-  for (let i = 1; i < numOutputs; i++, out.push(R)) ({ xL: R, xR: C } = hash(R, C, key));
+  for (let i = 1; i < numOutputs; i++, out.push(R)) ({ xL: R, xR: C } = hashInternal(R, C, key));
   const res = out.map((x) => Fr.create(x));
   return numOutputs === 1 ? res[0] : res;
 }

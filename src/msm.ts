@@ -10,7 +10,7 @@ import type {
 } from '@noble/curves/abstract/weierstrass.js';
 import { bn254 } from '@noble/curves/bn254.js';
 import { wrkr } from 'micro-wrkr';
-import { type Handlers, type MSMInput } from './msm-worker.ts';
+import type { Handlers, MSMInput } from './msm-worker.ts';
 
 function reducePoint<T>(p: ProjConstructor<T>) {
   return (lst: ProjPointType<T>[]) =>
@@ -38,11 +38,21 @@ export function initMSM(): { methods: any; terminate: () => void } {
   return { methods, terminate };
 }
 
+/** Options for adapting custom MSM implementations. */
+export type ModifyArgsOpts = {
+  /**
+   * Reduce data-dependent leakage by preserving zero-scalar entries.
+   * Defaults to `false` to retain sparse-MSM performance.
+   */
+  hardenSideChannel?: boolean;
+};
+
 /**
  * Adapts a worker MSM function into the point-array/scalar-array shape used by Groth16.
- * @param field - Scalar field used to drop zero scalars.
+ * @param field - Scalar field used to validate scalars and identify zero values.
  * @param point - Projective point constructor for normalization.
  * @param fn - Worker-backed MSM implementation.
+ * @param opts - Optional side-channel hardening policy.
  * @returns Helper that accepts separate point and scalar arrays.
  * @example
  * Wrap a worker MSM function so Groth16 can call it with separate point and scalar arrays.
@@ -56,14 +66,16 @@ export function initMSM(): { methods: any; terminate: () => void } {
 export function modifyArgs<T>(
   field: IField<bigint>,
   point: ProjConstructor<T>,
-  fn: (input: MSMInput<T>[]) => Promise<ProjPointType<T>>
+  fn: (input: MSMInput<T>[]) => Promise<ProjPointType<T>>,
+  opts: ModifyArgsOpts = {}
 ): (points: ProjPointType<T>[], scalars: bigint[]) => Promise<ProjPointType<T>> {
   return async (points: ProjPointType<T>[], scalars: bigint[]): Promise<ProjPointType<T>> => {
     if (points.length !== scalars.length) throw new Error('points.length !== scalars.length');
     const input: MSMInput<T>[] = [];
     for (let i = 0; i < points.length; i++) {
       const scalar = scalars[i];
-      if (field.is0(scalar)) continue;
+      if (!field.isValid(scalar)) throw new Error(`invalid scalar at index ${i}`);
+      if (!opts.hardenSideChannel && field.is0(scalar)) continue;
       input.push({ point: points[i], scalar });
     }
     // NOTE: buildGroth accepts curve and can be build with different version of @noble/curves,

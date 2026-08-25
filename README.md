@@ -20,7 +20,8 @@ import { generateWitness } from 'micro-zk-proofs/witness.js';
 // Wrap setup, witness generation, proof creation, and verification once you have a circuit.
 const prove = async (circuit: zkp.CircuitInfo, input: Record<string, string>) => {
   const setup = zkp.bn254.groth.setup(circuit);
-  const witness = generateWitness(circuit)(input);
+  // Legacy circom-js artifacts execute JavaScript; only opt in for trusted circuit files.
+  const witness = generateWitness(circuit, { unsafeAllowJsEvalCircuit: true })(input);
   const proof = await zkp.bn254.groth.createProof(setup.pkey, witness);
   const isValid = zkp.bn254.groth.verifyProof(setup.vkey, proof);
   return { proof, isValid };
@@ -128,6 +129,11 @@ Witness generation:
 
 > [!WARNING]
 > `.setup` method is for tests only, in real production setup you need to do multi-party ceremony to avoid leaking of toxic scalars.
+
+R1CS/ZKey parsing, setup, and proving apply default resource limits before artifact metadata can
+drive allocations: 64 MiB, 65,536 variables/constraints, and a 131,072-element domain. Trusted
+larger circuits can override these with the second argument to `getCoders()` and the `limits` option
+to `buildSnark()`.
 
 ### Create / verify proof
 
@@ -258,6 +264,19 @@ console.log('# wasm circom v1');
 circom JS v1 legacy programs produce code which is `eval`-ed using `new Function`.
 We have to monkey-patch BigInt - otherwise the code won't run.
 No patching is being done for WASM programs.
+Because the circuit artifact contains executable JavaScript, `generateWitness` requires the explicit
+`unsafeAllowJsEvalCircuit` option. Only enable it for trusted circuit files.
+
+Witness inputs reject sparse arrays and default to a maximum depth of 64 and
+`max(1024, nInputs * maxDepth)` traversed values. Exceptional trusted circuits can raise these
+bounds explicitly:
+
+```js
+const generate = zkpWitness.generateWitness(circuit, {
+  unsafeAllowJsEvalCircuit: true,
+  inputLimits: { maxDepth: 128, maxNodes: 100_000 },
+});
+```
 
 ```sh
 dir='circom-js'
@@ -278,7 +297,9 @@ import sumCircuit from './sum-circuit.json' with { "type": "json" };
 const groth = zkp.bn254.groth;
 const input = { a: '33', b: '34' };
 const setupJs = groth.setup(sumCircuit);
-const witnessJs = zkpWitness.generateWitness(sumCircuit)(input);
+const witnessJs = zkpWitness.generateWitness(sumCircuit, {
+  unsafeAllowJsEvalCircuit: true,
+})(input);
 
 (async () => {
   // 2. setup
@@ -317,6 +338,21 @@ const witnessJs = zkpWitness.generateWitness(sumCircuit)(input);
   msm.terminate();
 })();
 ```
+
+Custom/worker MSMs omit zero-scalar entries by default for sparse-proof performance. To keep the
+submitted workload shape independent of witness sparsity, opt into side-channel hardening:
+
+```js
+const hardenedGroth = zkp.buildSnark(bn254, {
+  G1msm: msm.methods.bn254_msmG1,
+  G2msm: msm.methods.bn254_msmG2,
+  hardenSideChannel: true,
+}).groth;
+```
+
+This option reduces the coarse payload-length and worker-utilization signal, but JavaScript and
+BigInt execution are not guaranteed to be constant-time. The default is `false` because preserving
+zero entries can materially slow sparse MSMs.
 
 ## Speed
 

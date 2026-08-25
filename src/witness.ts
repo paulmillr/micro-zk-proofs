@@ -13,6 +13,7 @@ import { bn254 as nobleBn254 } from '@noble/curves/bn254.js';
 import { bitMask } from '@noble/curves/utils.js';
 import { abytes, type TArg, type TRet } from '@noble/hashes/utils.js';
 import * as P from 'micro-packed';
+import { resolveArtifactLimits, type ArtifactLimits } from './artifact-limits.js';
 import {
   type CircuitInfo,
   type Constraint,
@@ -136,10 +137,37 @@ export const __TESTS: Readonly<{ yieldCtxCalls: (src: string) => string }> =
   /* @__PURE__ */ Object.freeze({
     yieldCtxCalls: yieldCtxCalls,
   });
+
+/** Limits for the shape of an untrusted witness input value. */
+export type WitnessInputLimits = {
+  /** Maximum nested array depth. Defaults to 64. */
+  maxDepth?: number;
+  /**
+   * Maximum roots, arrays, and scalar leaves traversed before rejection.
+   * Defaults to `max(1024, circuit.nInputs * maxDepth)`.
+   */
+  maxNodes?: number;
+};
+
+/** Options for compiling a legacy circom-js circuit. */
+export type GenerateWitnessOpts = {
+  /**
+   * Explicitly permits evaluating JavaScript embedded in the circuit artifact.
+   * Only enable this for trusted circuits.
+   */
+  unsafeAllowJsEvalCircuit?: boolean;
+  /** Override the default witness-input shape limits for exceptional trusted circuits. */
+  inputLimits?: WitnessInputLimits;
+};
+
 /**
  * Builds a witness generator for a legacy circom-js circuit JSON.
+ * The returned runner accepts each declared main input exactly once and rejects output or internal
+ * signal names.
  * @param circJson - Circom circuit JSON artifact.
+ * @param opts - Options controlling executable legacy circuit evaluation.
  * @returns Function that executes the circuit and returns the witness.
+ * @throws Unless `unsafeAllowJsEvalCircuit` is explicitly enabled.
  * @example
  * Build a witness runner from a circom JSON circuit artifact.
  * ```ts
@@ -169,11 +197,30 @@ export const __TESTS: Readonly<{ yieldCtxCalls: (src: string) => string }> =
  *   ],
  *   signalName2Idx: { one: 0, 'main.out': 1, 'main.b': 2, 'main.a': 3 },
  * };
- * const witness = generateWitness(circuitJson)({ a: '33', b: '34' });
+ * const witness = generateWitness(circuitJson, { unsafeAllowJsEvalCircuit: true })({
+ *   a: '33',
+ *   b: '34',
+ * });
  * // [1n, 67n, 34n, 33n]
  * ```
  */
-export function generateWitness(circJson: any): (input: any) => any {
+export function generateWitness(
+  circJson: any,
+  opts: GenerateWitnessOpts = {}
+): (input: any) => any {
+  if (!isPlainObject(opts)) throw new TypeError('"opts" expected object, got type=' + typeof opts);
+  if (opts.unsafeAllowJsEvalCircuit !== true)
+    throw new Error(
+      'legacy circuit JSON evaluates JavaScript; set unsafeAllowJsEvalCircuit: true only for trusted circuits'
+    );
+  const inputLimits = opts.inputLimits ?? {};
+  if (!isPlainObject(inputLimits))
+    throw new TypeError('"opts.inputLimits" expected object, got type=' + typeof inputLimits);
+  const maxInputDepth = inputLimits.maxDepth ?? 64;
+  if (!Number.isSafeInteger(maxInputDepth) || maxInputDepth < 0)
+    throw new Error(
+      `expected non-negative safe integer inputLimits.maxDepth, got ${maxInputDepth}`
+    );
   if (!isPlainObject(circJson))
     throw new TypeError('"circJson" expected object, got type=' + typeof circJson);
   if (!Array.isArray(circJson.signals))
@@ -190,6 +237,14 @@ export function generateWitness(circJson: any): (input: any) => any {
     throw new TypeError(
       '"circJson.functions" expected object, got type=' + typeof circJson.functions
     );
+  if (!Number.isSafeInteger(circJson.nInputs) || circJson.nInputs < 0)
+    throw new Error(`expected non-negative safe integer circuit nInputs, got ${circJson.nInputs}`);
+  const derivedInputNodes = circJson.nInputs * maxInputDepth;
+  if (!Number.isSafeInteger(derivedInputNodes))
+    throw new Error('default witness input node limit exceeds safe integer range');
+  const maxInputNodes = inputLimits.maxNodes ?? Math.max(1024, derivedInputNodes);
+  if (!Number.isSafeInteger(maxInputNodes) || maxInputNodes < 1)
+    throw new Error(`expected positive safe integer inputLimits.maxNodes, got ${maxInputNodes}`);
   const P = nobleBn254.fields.Fr.ORDER;
   const MASK = bitMask(nobleBn254.fields.Fr.BITS);
 
@@ -232,6 +287,89 @@ export function generateWitness(circJson: any): (input: any) => any {
   const patcher = monkeyPatchBigInt();
 
   return function (input: any): any {
+    const firstInput = circJson.nOutputs + 1;
+    const inputEnd = firstInput + circJson.nInputs;
+    const assignedInputs = new Set<number>();
+    const pendingInputs: { fullName: string; value: bigint }[] = [];
+    const activeArrays = new WeakSet<any[]>();
+    let inputNodes = 0;
+    // Resolve and validate the complete input before executing components. Input aliases are
+    // accepted only when they resolve to a declared main-input slot, and each slot is assigned once.
+    for (const root of Object.keys(input)) {
+      const selectors: string[] = [];
+      const stack: {
+        values: any;
+        depth: number;
+        entered: boolean;
+        nextIndex: number;
+        ownsSelector: boolean;
+      }[] = [
+        {
+          values: input[root],
+          depth: 0,
+          entered: false,
+          nextIndex: 0,
+          ownsSelector: false,
+        },
+      ];
+      const popFrame = () => {
+        const frame = stack.pop()!;
+        if (frame.ownsSelector) selectors.pop();
+      };
+      while (stack.length) {
+        const frame = stack[stack.length - 1];
+        if (!frame.entered) {
+          frame.entered = true;
+          inputNodes++;
+          if (inputNodes > maxInputNodes)
+            throw new Error(`Witness input exceeds configured node limit ${maxInputNodes}`);
+          if (!Array.isArray(frame.values)) {
+            if (frame.values === undefined) throw new Error('Signal not defined:' + root);
+            const fullName = signalStr(`main.${root}`, selectors);
+            let id: number;
+            try {
+              id = getSignalIdx(fullName);
+            } catch {
+              throw new Error(`Unknown input signal: ${fullName}`);
+            }
+            if (!Number.isSafeInteger(id) || id < firstInput || id >= inputEnd)
+              throw new Error(`Unknown input signal: ${fullName}`);
+            if (assignedInputs.has(id)) throw new Error(`Input assigned twice: ${fullName}`);
+            assignedInputs.add(id);
+            pendingInputs.push({ fullName, value: BigInt(frame.values) });
+            popFrame();
+            continue;
+          }
+          if (frame.depth >= maxInputDepth)
+            throw new Error(`Witness input exceeds configured depth limit ${maxInputDepth}`);
+          if (activeArrays.has(frame.values)) throw new Error('Cyclic witness input array');
+          activeArrays.add(frame.values);
+          if (frame.values.length > maxInputNodes - inputNodes)
+            throw new Error(`Witness input exceeds configured node limit ${maxInputNodes}`);
+        }
+        if (frame.nextIndex >= frame.values.length) {
+          activeArrays.delete(frame.values);
+          popFrame();
+          continue;
+        }
+        const index = frame.nextIndex++;
+        if (!Object.hasOwn(frame.values, index)) throw new Error('Sparse witness input array');
+        selectors.push(`${index}`);
+        stack.push({
+          values: frame.values[index],
+          depth: frame.depth + 1,
+          entered: false,
+          nextIndex: 0,
+          ownsSelector: true,
+        });
+      }
+    }
+    for (let i = 0; i < circJson.nInputs; i++) {
+      const idx = inputIdx(i);
+      if (!assignedInputs.has(idx))
+        throw new Error('Input Signal not assigned: ' + signalNames(idx));
+    }
+
     const witness = new Array(circJson.nSignals);
     let currentComponent: string | undefined;
     let scopes: Scope[] = []; // scope stack
@@ -472,27 +610,9 @@ export function generateWitness(circJson: any): (input: any) => any {
       // a call-stack overflow when complex circuits have long inter-template chains.
       for (let c in notInitSignals) if (notInitSignals[c] == 0) queueReady(c);
       drainPendingComponents();
-      // Circuit JSON inputs are own fields; prototypes may carry unrelated app metadata.
-      for (const s of Object.keys(input)) {
-        currentComponent = 'main';
-        const stack = [{ selectors: [] as string[], values: input[s] }];
-        while (stack.length) {
-          const { selectors, values } = stack.pop()!;
-          if (!Array.isArray(values)) {
-            if (values === undefined) throw new Error('Signal not defined:' + s);
-            ctx.setSignal(s, selectors, BigInt(values));
-            continue;
-          }
-          for (let j = values.length - 1; j >= 0; j--) {
-            stack.push({ selectors: [...selectors, `${j}`], values: values[j] });
-          }
-        }
-      }
-      for (let i = 0; i < circJson.nInputs; i++) {
-        const idx = inputIdx(i);
-        if (witness[idx] === undefined)
-          throw new Error('Input Signal not assigned: ' + signalNames(idx));
-      }
+      currentComponent = 'main';
+      for (const assignment of pendingInputs)
+        setSignalFullName(assignment.fullName, assignment.value);
       for (let i = 0; i < witness.length; i++)
         if (witness[i] === undefined) throw new Error('Signal not assigned: ' + signalNames(i));
 
@@ -574,6 +694,7 @@ type CodersOutput = {
 /**
  * Binary coders and parsers for Circom2 artifacts.
  * @param curve - Curve pair used for field sizing and point decoding.
+ * @param artifactLimits - Optional resource limits checked before metadata-driven allocations.
  * @returns R1CS, witness, and zkey coders plus parse helpers.
  * @example
  * Build the coders once, then use them to parse and encode Circom2 artifacts.
@@ -584,14 +705,21 @@ type CodersOutput = {
  * coders.binWitness.decode(bytes);
  * ```
  */
-export const getCoders = (curve: BLSCurvePair): TRet<CodersOutput> => {
+export const getCoders = (
+  curve: BLSCurvePair,
+  artifactLimits: ArtifactLimits = {}
+): TRet<CodersOutput> => {
   if (!isPlainObject(curve))
     throw new TypeError('"curve" expected curve object, got type=' + typeof curve);
   if (!isPlainObject(curve.fields))
     throw new TypeError('"curve.fields" expected object, got type=' + typeof curve.fields);
   if (!isPlainObject(curve.fields.Fr))
     throw new TypeError('"curve.fields.Fr" expected object, got type=' + typeof curve.fields.Fr);
+  const limits = resolveArtifactLimits(artifactLimits);
   const field = curve.fields.Fr;
+  let fieldRootBits = 0;
+  for (let n = field.ORDER - BigInt(1); (n & BigInt(1)) === BigInt(0); n >>= BigInt(1))
+    fieldRootBits++;
   // NOTE: we need to pass field here, even if bigints are variable size, they are fixed to field bytes!
   const fieldBytes = field.BYTES;
   const fieldCoder = P.bigint(fieldBytes, true, false);
@@ -718,23 +846,89 @@ export const getCoders = (curve: BLSCurvePair): TRet<CodersOutput> => {
     sections: P.array(P.U32LE, ZKeySection),
   });
 
+  const collectUniqueSections = (
+    format: string,
+    sections: { TAG: string; data: unknown }[],
+    required: readonly string[]
+  ): Record<string, any> => {
+    const out: Record<string, any> = Object.create(null);
+    for (const section of sections) {
+      if (Object.prototype.hasOwnProperty.call(out, section.TAG))
+        throw new Error(`${format}: duplicate ${section.TAG} section`);
+      out[section.TAG] = section.data;
+    }
+    for (const tag of required) {
+      if (!Object.prototype.hasOwnProperty.call(out, tag))
+        throw new Error(`${format}: cannot find ${tag}`);
+    }
+    return out;
+  };
+  const checkArtifactSize = (bytes: Uint8Array, format: string) => {
+    if (bytes.length > limits.maxBytes)
+      throw new Error(
+        `${format} exceeds configured byte limit ${limits.maxBytes}: ${bytes.length}`
+      );
+  };
+  const checkMetadataLimit = (value: number, limit: number, name: string) => {
+    if (value > limit) throw new Error(`${name} exceeds configured limit ${limit}: ${value}`);
+  };
+
   const getCircuitInfo = (bytes: TArg<Uint8Array>): CircuitInfo => {
     bytes = abytes(bytes, undefined, 'bytes');
+    checkArtifactSize(bytes, 'R1CS');
     const data = R1CS.decode(bytes);
-    const constraints = data.sections.find((i) => i.TAG === 'constraint');
-    if (!constraints) throw new Error('R1CS: cannot find constraints');
-    const header = data.sections.find((i) => i.TAG === 'header');
-    if (!header) throw new Error('R1CS: cannot find header');
-    if (header.data.prime !== field.ORDER) throw new Error('R1CS: wrong field order');
+    if (data.version !== 1) throw new Error(`R1CS: unsupported version ${data.version}`);
+    const sections = collectUniqueSections('R1CS', data.sections, [
+      'header',
+      'constraint',
+      'wire2label',
+    ]);
+    const header = sections.header;
+    const constraints = sections.constraint as [Constraint, Constraint, Constraint][];
+    const wire2label = sections.wire2label as bigint[];
+    if (header.prime !== field.ORDER) throw new Error('R1CS: wrong field order');
+    if (header.nWires < 1) throw new Error(`R1CS: invalid wire count ${header.nWires}`);
+    checkMetadataLimit(header.nWires, limits.maxVariables, 'R1CS wire count');
+    checkMetadataLimit(constraints.length, limits.maxConstraints, 'R1CS constraint count');
+    if (header.mConstraints !== constraints.length)
+      throw new Error(
+        `R1CS: expected ${header.mConstraints} constraints, got ${constraints.length}`
+      );
+    if (wire2label.length !== header.nWires)
+      throw new Error(`R1CS: expected ${header.nWires} wire labels, got ${wire2label.length}`);
+    if (header.nLables < BigInt(header.nWires))
+      throw new Error(`R1CS: label count is smaller than wire count`);
+    const declaredSignals = 1 + header.nPubOut + header.nPubIn + header.nPrvIn;
+    if (!Number.isSafeInteger(declaredSignals) || declaredSignals > header.nWires)
+      throw new Error(`R1CS: public/private signal counts exceed wire count`);
+    const domainRows = constraints.length + header.nPubOut + header.nPubIn;
+    if (domainRows < 1) throw new Error('R1CS: cannot derive domain from an empty circuit');
+    const domainBits = Math.floor(Math.log2(domainRows)) + 1;
+    if (domainBits > fieldRootBits) throw new Error('R1CS: domain exceeds field root capacity');
+    checkMetadataLimit(2 ** domainBits, limits.maxDomainSize, 'R1CS domainSize');
+    for (let row = 0; row < constraints.length; row++) {
+      for (const side of constraints[row]) {
+        for (const key of Object.keys(side)) {
+          if (Number(key) >= header.nWires)
+            throw new Error(`R1CS: constraint ${row} wire index out of range: ${key}`);
+        }
+      }
+    }
+    for (const tag of ['customGatesList', 'customGatesApplication']) {
+      const custom = sections[tag] as Uint8Array | undefined;
+      if (custom && custom.length !== 0)
+        throw new Error(`R1CS: unsupported nonempty ${tag} section`);
+    }
     return {
-      nVars: header.data.nWires,
-      nPubInputs: header.data.nPubIn,
-      nOutputs: header.data.nPubOut,
-      constraints: constraints.data,
+      nVars: header.nWires,
+      nPubInputs: header.nPubIn,
+      nOutputs: header.nPubOut,
+      constraints,
     };
   };
   function parseZKey(zkey: TArg<Uint8Array>) {
     zkey = abytes(zkey, undefined, 'zkey');
+    checkArtifactSize(zkey, 'ZKey');
     const { Fr, Fp } = curve.fields;
     // Montgomery encoding of field elements
     const fieldFromMont = (f: IField<bigint>, is1: boolean) => {
@@ -764,24 +958,8 @@ export const getCoders = (curve: BLSCurvePair): TRet<CodersOutput> => {
             [BigInt(1), BigInt(0)],
           ];
     const data = ZKeyRaw.decode(zkey);
-
-    function getByTag<T extends { TAG: string; data: unknown }, K extends T['TAG']>(
-      sections: T[],
-      tag: K
-    ): Extract<T, { TAG: K }>['data'] {
-      const v = sections.find((i): i is Extract<T, { TAG: K }> => i.TAG === tag);
-      if (!v) throw new Error('ZKey: cannot find ' + String(tag));
-      return v.data;
-    }
-    function collect<T extends { TAG: string; data: unknown }, K extends readonly T['TAG'][]>(
-      sections: T[],
-      ks: K
-    ): { [P in K[number]]: Extract<T, { TAG: P }>['data'] } {
-      const out = {} as any;
-      for (const k of ks) out[k] = getByTag<T, typeof k>(sections, k);
-      return out;
-    }
-    const res = collect(data.sections, [
+    if (data.version !== 1) throw new Error(`ZKey: unsupported version ${data.version}`);
+    const res = collectUniqueSections('ZKey', data.sections, [
       'header',
       'headerGroth',
       'IC',
@@ -791,25 +969,63 @@ export const getCoders = (curve: BLSCurvePair): TRet<CodersOutput> => {
       'B2',
       'C',
       'hExps',
-    ] as const);
+    ]);
+    const header = res.headerGroth;
+    if (res.header !== 'groth16') throw new Error(`ZKey: unsupported protocol ${res.header}`);
+    if (
+      header.n8q !== Fp.BYTES ||
+      header.q !== Fp.ORDER ||
+      header.n8r !== Fr.BYTES ||
+      header.r !== Fr.ORDER
+    )
+      throw new Error('ZKey: field mismatch');
+    if (header.nVars < 1 || header.nPublic >= header.nVars)
+      throw new Error(`ZKey: invalid variable/public counts`);
+    checkMetadataLimit(header.nVars, limits.maxVariables, 'ZKey variable count');
+    const domainBits = Math.log2(header.domainSize);
+    if (!Number.isInteger(domainBits))
+      throw new Error(`ZKey: domainSize must be a power of two, got ${header.domainSize}`);
+    if (domainBits > fieldRootBits) throw new Error(`ZKey: domainSize exceeds field root capacity`);
+    checkMetadataLimit(header.domainSize, limits.maxDomainSize, 'ZKey domainSize');
+    const checkLength = (value: unknown, expected: number, name: string) => {
+      if (!Array.isArray(value) || value.length !== expected)
+        throw new Error(
+          `ZKey: expected ${name}.length === ${expected}, got ${Array.isArray(value) ? value.length : 'non-array'}`
+        );
+    };
+    checkLength(res.IC, header.nPublic + 1, 'IC');
+    checkLength(res.A, header.nVars, 'A');
+    checkLength(res.B1, header.nVars, 'B1');
+    checkLength(res.B2, header.nVars, 'B2');
+    checkLength(res.C, header.nVars - header.nPublic - 1, 'C');
+    checkLength(res.hExps, header.domainSize, 'hExps');
+    if (!Array.isArray(res.ccoefs)) throw new Error('ZKey: expected ccoefs array');
+    for (const coefficient of res.ccoefs) {
+      if (
+        coefficient.matrix > 2 ||
+        coefficient.constraint >= header.domainSize ||
+        coefficient.signal >= header.nVars
+      )
+        throw new Error('ZKey: invalid coefficient index');
+    }
     // Same format as verification key
     const json = {
       protocol: res.header,
-      ...res.headerGroth,
-      vk_alpha_1: convG1(res.headerGroth.vk_alpha_1),
-      vk_beta_1: convG1(res.headerGroth.vk_beta_1),
-      vk_delta_1: convG1(res.headerGroth.vk_delta_1),
-      vk_beta_2: convG2(res.headerGroth.vk_beta_2),
-      vk_delta_2: convG2(res.headerGroth.vk_delta_2),
-      vk_gamma_2: convG2(res.headerGroth.vk_gamma_2),
-      power: Math.log2(res.headerGroth.domainSize),
+      ...header,
+      vk_alpha_1: convG1(header.vk_alpha_1),
+      vk_beta_1: convG1(header.vk_beta_1),
+      vk_delta_1: convG1(header.vk_delta_1),
+      vk_beta_2: convG2(header.vk_beta_2),
+      vk_delta_2: convG2(header.vk_delta_2),
+      vk_gamma_2: convG2(header.vk_gamma_2),
+      power: domainBits,
       IC: res.IC.map(convG1),
       ccoefs: res.ccoefs.map((i) => ({ ...i, value: convFr2(i.value) })),
       A: res.A.map(convG1),
       B1: res.B1.map(convG1),
       B2: res.B2.map(convG2),
       // snarkjs zkeys omit the leading zero C-query entries for public signals.
-      C: new Array(res.headerGroth.nPublic + 1).fill(null).concat(res.C.map(convG1)),
+      C: new Array(header.nPublic + 1).fill(null).concat(res.C.map(convG1)),
       hExps: res.hExps.map(convG1),
     };
     // Our format (old snarkjs compat)

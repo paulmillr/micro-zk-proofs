@@ -8,10 +8,12 @@ import { bn254 as nobleBn254 } from '@noble/curves/bn254.js';
 import { bytesToNumberBE } from '@noble/curves/utils.js';
 import { randomBytes } from '@noble/hashes/utils.js';
 import type { TArg, TRet } from '@noble/hashes/utils.js';
+import { resolveArtifactLimits, type ArtifactLimits } from './artifact-limits.js';
 import type { MSMInput } from './msm-worker.ts';
 import { modifyArgs } from './msm.ts';
 
 export type { TArg, TRet } from '@noble/hashes/utils.js';
+export type { ArtifactLimits } from './artifact-limits.js';
 
 // It is hard to make groth16 async / fast, because MSM perf is
 // non-linear (2048 => 1024 points is not 2x faster).
@@ -38,6 +40,9 @@ export interface Coder<F, T> {
 type RandFn = (len: number) => Uint8Array;
 const U32_MAX = 0xffffffff;
 const MAX_DOMAIN_BITS = 30;
+const MAX_TOXIC_T_ATTEMPTS = 128;
+const MAX_BIGINT_CONVERSION_DEPTH = 256;
+const MIN_BIGINT_CYCLE_CHECK_DEPTH = 32;
 const _0n = /* @__PURE__ */ BigInt(0);
 const _1n = /* @__PURE__ */ BigInt(1);
 
@@ -48,18 +53,29 @@ function log2(n: number) {
   return 31 - Math.clz32(n);
 }
 
-// Basic utility to deep convert bigints to strings and back
-function deepConvert(o: any, mapper: (o: any) => any): any {
-  const t = mapper(o);
-  if (t !== undefined) return t;
-  if (o === null) return o as any;
-  if (Array.isArray(o)) return o.map((i) => deepConvert(i, mapper)) as any;
-  if (typeof o == 'object') {
-    return Object.fromEntries(
-      Object.entries(o).map(([k, v]) => [k, deepConvert(v, mapper)])
-    ) as any;
-  }
-  return o as any;
+// Basic utility to deep convert bigints to strings and back with bounded call-stack use.
+function deepConvert(root: any, mapper: (value: any) => any): any {
+  const active: object[] = [];
+  const visit = (value: any, depth: number): any => {
+    if (depth > MAX_BIGINT_CONVERSION_DEPTH)
+      throw new Error(`maximum bigint conversion depth exceeded (${MAX_BIGINT_CONVERSION_DEPTH})`);
+    const mapped = mapper(value);
+    if (mapped !== undefined) return mapped;
+    if (value === null || typeof value !== 'object') return value;
+    // Ordinary proof/key JSON is shallow. Delay the ancestor scan until a cycle could otherwise
+    // consume meaningful work; the hard depth limit remains an unconditional backstop.
+    if (depth >= MIN_BIGINT_CYCLE_CHECK_DEPTH && active.includes(value))
+      throw new Error('cyclic bigint conversion value');
+    active.push(value);
+    const converted = Array.isArray(value)
+      ? value.map((item) => visit(item, depth + 1))
+      : Object.fromEntries(
+          Object.entries(value).map(([key, item]) => [key, visit(item, depth + 1)])
+        );
+    active.pop();
+    return converted;
+  };
+  return visit(root, 0);
 }
 // TODO: should be something like 'Deep' type here?
 // prettier-ignore
@@ -82,6 +98,7 @@ export type StringToBigint<T> =
   T;
 /**
  * Helper to serialize bigint-heavy objects through JSON-compatible strings.
+ * Structures deeper than 256 levels and cyclic values reject explicitly.
  * @example
  * Encode bigint-heavy data for JSON transport, then decode it back.
  * ```ts
@@ -102,9 +119,9 @@ export const stringBigints: {
     }) as BigintToString<F>;
   },
   decode: <T>(o: T): StringToBigint<T> => {
-    // Only unsigned base-10 strings are decoded for old proof/key JSON compatibility.
+    // Only canonical unsigned base-10 strings are decoded for proof/key JSON compatibility.
     return deepConvert(o, (o) =>
-      typeof o == 'string' && /^[0-9]+$/.test(o) ? BigInt(o) : undefined
+      typeof o == 'string' && /^(0|[1-9][0-9]*)$/.test(o) ? BigInt(o) : undefined
     ) as StringToBigint<T>;
   },
 });
@@ -147,13 +164,20 @@ export type Coefficient = {
   signal: number;
 };
 
-/** Groth16 proving key. */
+/**
+ * Groth16 proving key.
+ * @warning Query points are decoded without curve or subgroup validation. Authenticate proving
+ * keys before using them with private witnesses.
+ */
 export interface ProvingKey {
   /** Protocol name. */
   protocol?: 'groth';
   /** Total number of circuit variables. */
   nVars: number;
-  /** Number of public signals, including outputs and inputs. */
+  /**
+   * Number of public signals, including outputs and inputs.
+   * Validate this value against trusted circuit metadata before proving.
+   */
   nPublic: number;
   /** Log2 of the evaluation domain size. */
   domainBits: number;
@@ -232,7 +256,11 @@ export interface ProofWithSignals {
   proof: GrothProof;
   /** Public signals used during verification. */
   publicSignals: Witness;
-  /** Optional commitment points for proof systems that emit them. */
+  /**
+   * Optional commitment points for proof systems that emit them.
+   * @warning These points are not bound to this proof or its public signals. Do not accept them
+   * from untrusted proofs without a complete external committed-Groth16 protocol.
+   */
   commitments?: G1Point[];
 }
 
@@ -268,6 +296,13 @@ export type GrothOpts = {
   nqr?: number | bigint;
   /** Return toxic waste values for tests and fixture generation. */
   unsafePreserveToxic?: boolean;
+  /** Resource limits checked before circuit or proving-key metadata drives allocations. */
+  limits?: ArtifactLimits;
+  /**
+   * Reduce data-dependent leakage when using custom MSM backends by preserving zero-scalar entries.
+   * Defaults to `false` to retain sparse-MSM performance.
+   */
+  hardenSideChannel?: boolean;
   /**
    * Custom G1 MSM implementation.
    * @param input - Point-scalar pairs to multiply.
@@ -305,6 +340,7 @@ export interface SnarkConstructorOutput {
      * @param circuit - Circuit metadata and constraints.
      * @param rnd - Optional randomness source used to sample toxic waste.
      * @returns Proving key, verification key, and optional toxic waste.
+     * @throws If a valid evaluation point cannot be sampled within 128 attempts.
      */
     setup(
       circuit: CircuitInfo,
@@ -320,13 +356,14 @@ export interface SnarkConstructorOutput {
      * @param witness - Witness vector.
      * @param rnd - Optional randomness source.
      * @returns Proof and public signals.
+     * @warning The proving key controls which witness entries are returned as public signals.
      */
     createProof(pkey: ProvingKey, witness: Witness, rnd?: TArg<RandFn>): Promise<ProofWithSignals>;
     /**
      * Verifies a Groth16 proof.
      * @param vkey - Verification key.
      * @param proofWithSignals - Proof plus public signals.
-     * @returns `true` when the proof verifies.
+     * @returns `true` when the proof verifies; malformed or non-canonical inputs return `false`.
      */
     verifyProof(vkey: VerificationKey, proofWithSignals: ProofWithSignals): boolean;
   };
@@ -359,6 +396,7 @@ export function buildSnark(
   curve: BLSCurvePair,
   opts: GrothOpts = {}
 ): TRet<SnarkConstructorOutput> {
+  const limits = resolveArtifactLimits(opts.limits);
   // Utils
   const G1 = curve.G1.Point;
   const G2 = curve.G2.Point;
@@ -376,13 +414,49 @@ export function buildSnark(
   };
   const G1c = pointCoder(G1, Fpc);
   const G2c = pointCoder(G2, Fp2c);
+  const isCanonicalFp = (value: unknown): value is bigint =>
+    typeof value === 'bigint' && value >= _0n && value < Fp.ORDER;
+  const isCanonicalFr = (value: unknown): value is bigint =>
+    typeof value === 'bigint' && value >= _0n && value < Fr.ORDER;
+  const decodeCanonicalG1 = (raw: unknown): G1Point => {
+    if (!Array.isArray(raw) || raw.length !== 3 || !raw.every(isCanonicalFp))
+      throw new Error('invalid canonical G1 tuple');
+    const point = new G1(raw[0], raw[1], raw[2]);
+    const encoded = G1c.encode(point);
+    if (!encoded.every((value, index) => value === raw[index]))
+      throw new Error('non-canonical G1 point');
+    return point;
+  };
+  const decodeCanonicalG2 = (raw: unknown): G2Point => {
+    if (
+      !Array.isArray(raw) ||
+      raw.length !== 3 ||
+      !raw.every(
+        (coordinate) =>
+          Array.isArray(coordinate) && coordinate.length === 2 && coordinate.every(isCanonicalFp)
+      )
+    )
+      throw new Error('invalid canonical G2 tuple');
+    const coordinates = raw as [bigint, bigint][];
+    const point = new G2(
+      Fp2.create({ c0: coordinates[0][0], c1: coordinates[0][1] }),
+      Fp2.create({ c0: coordinates[1][0], c1: coordinates[1][1] }),
+      Fp2.create({ c0: coordinates[2][0], c1: coordinates[2][1] })
+    );
+    const encoded = G2c.encode(point);
+    if (
+      !encoded.every((coordinate, i) => coordinate.every((value, j) => value === coordinates[i][j]))
+    )
+      throw new Error('non-canonical G2 point');
+    return point;
+  };
 
   const G1msm = !opts.G1msm
     ? (p: G1Point[], s: bigint[]) => pippenger(curve.G1.Point, p, s)
-    : modifyArgs(Fr, G1, opts.G1msm);
+    : modifyArgs(Fr, G1, opts.G1msm, { hardenSideChannel: opts.hardenSideChannel });
   const G2msm = !opts.G2msm
     ? (p: G2Point[], s: bigint[]) => pippenger(curve.G2.Point, p, s)
-    : modifyArgs(Fr, G2, opts.G2msm);
+    : modifyArgs(Fr, G2, opts.G2msm, { hardenSideChannel: opts.hardenSideChannel });
 
   const Frandom = (rnd: TArg<RandFn> = randomBytes) => {
     // Reduce random bytes once so unsafePreserveToxic exposes the same field elements setup uses.
@@ -399,6 +473,119 @@ export function buildSnark(
   const checkDomainBits = (bits: number) => {
     if (!Number.isSafeInteger(bits) || bits < 0 || bits > roots.info.powerOfTwo)
       throw new Error(`expected domainBits <= ${roots.info.powerOfTwo}, got ${bits}`);
+  };
+  const checkCount = (value: number, name: string, allowZero = false) => {
+    if (!Number.isSafeInteger(value) || value < (allowZero ? 0 : 1) || value > U32_MAX)
+      throw new Error(
+        `expected uint32 ${allowZero ? 'non-negative' : 'positive'} integer for ${name}, got ${value}`
+      );
+  };
+  const checkLimit = (value: number, limit: number, name: string) => {
+    if (value > limit) throw new Error(`${name} exceeds configured limit ${limit}: ${value}`);
+  };
+  const checkedDomainBits = (domainSize: number) => {
+    checkCount(domainSize, 'domainSize');
+    const bits = log2(domainSize);
+    if (2 ** bits !== domainSize)
+      throw new Error(`expected domainSize to be a power of two, got ${domainSize}`);
+    checkDomainBits(bits);
+    checkLimit(domainSize, limits.maxDomainSize, 'domainSize');
+    return bits;
+  };
+  const checkConstraintIndex = (key: string, upperBound: number, label: string) => {
+    if (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= upperBound)
+      throw new Error(`${label} index out of range: ${key}`);
+  };
+  const validateCircuit = (circuit: CircuitInfo) => {
+    if (circuit === null || typeof circuit !== 'object' || Array.isArray(circuit))
+      throw new TypeError('"circuit" expected object, got type=' + typeof circuit);
+    checkCount(circuit.nVars, 'nVars');
+    checkCount(circuit.nPubInputs, 'nPubInputs', true);
+    checkCount(circuit.nOutputs, 'nOutputs', true);
+    checkLimit(circuit.nVars, limits.maxVariables, 'nVars');
+    const nPublic = circuit.nPubInputs + circuit.nOutputs;
+    if (!Number.isSafeInteger(nPublic) || nPublic >= circuit.nVars)
+      throw new Error(`expected nPubInputs + nOutputs < nVars, got ${nPublic}`);
+    if (!Array.isArray(circuit.constraints))
+      throw new TypeError('"circuit.constraints" expected array');
+    checkLimit(circuit.constraints.length, limits.maxConstraints, 'constraint count');
+    const domainBits = log2(circuit.constraints.length + nPublic) + 1;
+    checkDomainBits(domainBits);
+    const domainSize = 2 ** domainBits;
+    checkLimit(domainSize, limits.maxDomainSize, 'domainSize');
+    for (let row = 0; row < circuit.constraints.length; row++) {
+      const constraint = circuit.constraints[row];
+      if (!Array.isArray(constraint) || constraint.length !== 3)
+        throw new Error(`constraint ${row} must contain exactly three sides`);
+      for (const side of constraint) {
+        if (side === null || typeof side !== 'object' || Array.isArray(side))
+          throw new Error(`constraint ${row} side must be an object`);
+        for (const key of Object.keys(side))
+          checkConstraintIndex(key, circuit.nVars, `constraint ${row}`);
+      }
+    }
+    return { domainBits, domainSize, nPublic };
+  };
+  const checkArrayLength = (value: unknown, expected: number, name: string) => {
+    if (!Array.isArray(value) || value.length !== expected)
+      throw new Error(
+        `expected ${name}.length === ${expected}, got ${Array.isArray(value) ? value.length : 'non-array'}`
+      );
+  };
+  const validateProvingInput = (pkey: ProvingKey, witness: Witness) => {
+    if (pkey === null || typeof pkey !== 'object' || Array.isArray(pkey))
+      throw new TypeError('"pkey" expected object, got type=' + typeof pkey);
+    checkCount(pkey.nVars, 'pkey.nVars');
+    checkCount(pkey.nPublic, 'pkey.nPublic', true);
+    checkLimit(pkey.nVars, limits.maxVariables, 'pkey.nVars');
+    if (pkey.nPublic >= pkey.nVars)
+      throw new Error(`expected pkey.nPublic < pkey.nVars, got ${pkey.nPublic}`);
+    const domainBits = checkedDomainBits(pkey.domainSize);
+    if (pkey.domainBits !== domainBits)
+      throw new Error(`expected pkey.domainBits === ${domainBits}, got ${pkey.domainBits}`);
+    checkArrayLength(witness, pkey.nVars, 'witness');
+    checkArrayLength(pkey.A, pkey.nVars, 'pkey.A');
+    checkArrayLength(pkey.B1, pkey.nVars, 'pkey.B1');
+    checkArrayLength(pkey.B2, pkey.nVars, 'pkey.B2');
+    checkArrayLength(pkey.C, pkey.nVars, 'pkey.C');
+
+    const compact = pkey.ccoefs !== undefined;
+    const legacy = pkey.polsA !== undefined || pkey.polsB !== undefined || pkey.polsC !== undefined;
+    if (compact === legacy)
+      throw new Error('wrong proving key: expected exactly one polynomial representation');
+    if (compact) {
+      if (!Array.isArray(pkey.ccoefs)) throw new Error('expected pkey.ccoefs array');
+      checkArrayLength(pkey.hExps, pkey.domainSize, 'pkey.hExps');
+      for (const coefficient of pkey.ccoefs) {
+        if (
+          coefficient === null ||
+          typeof coefficient !== 'object' ||
+          !Number.isInteger(coefficient.matrix) ||
+          coefficient.matrix < 0 ||
+          coefficient.matrix > 2 ||
+          !Number.isInteger(coefficient.constraint) ||
+          coefficient.constraint < 0 ||
+          coefficient.constraint >= pkey.domainSize ||
+          !Number.isInteger(coefficient.signal) ||
+          coefficient.signal < 0 ||
+          coefficient.signal >= pkey.nVars
+        )
+          throw new Error('invalid proving-key coefficient index');
+      }
+    } else {
+      checkArrayLength(pkey.polsA, pkey.nVars, 'pkey.polsA');
+      checkArrayLength(pkey.polsB, pkey.nVars, 'pkey.polsB');
+      checkArrayLength(pkey.polsC, pkey.nVars, 'pkey.polsC');
+      checkArrayLength(pkey.hExps, pkey.domainSize + 1, 'pkey.hExps');
+      for (const polynomials of [pkey.polsA!, pkey.polsB!, pkey.polsC!]) {
+        for (const polynomial of polynomials) {
+          if (polynomial === null || typeof polynomial !== 'object' || Array.isArray(polynomial))
+            throw new Error('expected proving-key polynomial object');
+          for (const key of Object.keys(polynomial))
+            checkConstraintIndex(key, pkey.domainSize, 'proving-key constraint');
+        }
+      }
+    }
   };
   // TODO: cleanup more later
   const poly = {
@@ -492,15 +679,27 @@ export function buildSnark(
     groth: Object.freeze({
       setup(circuit: CircuitInfo, rnd: TArg<RandFn> = randomBytes) {
         // Sizes
+        const { domainBits, domainSize, nPublic } = validateCircuit(circuit);
         const nConstraints = circuit.constraints.length;
-        const domainBits = log2(nConstraints + circuit.nPubInputs + circuit.nOutputs + 1 - 1) + 1;
-        checkDomainBits(domainBits);
-        const domainSize = 2 ** domainBits;
-        const nPublic = circuit.nPubInputs + circuit.nOutputs;
         const maxH = domainSize + 1;
         // Toxic
+        let t = Fr.ZERO;
+        let zt = Fr.ZERO;
+        for (let attempt = 0; attempt < MAX_TOXIC_T_ATTEMPTS; attempt++) {
+          const candidate = Frandom(rnd);
+          if (Fr.is0(candidate)) continue;
+          const candidateZt = Fr.sub(Fr.pow(candidate, BigInt(domainSize)), Fr.ONE);
+          if (Fr.is0(candidateZt)) continue;
+          t = candidate;
+          zt = candidateZt;
+          break;
+        }
+        if (Fr.is0(t))
+          throw new Error(
+            `failed to sample toxic t outside the evaluation domain after ${MAX_TOXIC_T_ATTEMPTS} attempts`
+          );
         const toxic = {
-          t: Frandom(rnd),
+          t,
           kalfa: Frandom(rnd),
           kbeta: Frandom(rnd),
           kgamma: Frandom(rnd),
@@ -532,7 +731,6 @@ export function buildSnark(
         for (let i = 0; i < circuit.nPubInputs + circuit.nOutputs + 1; i++)
           polsA[i][nConstraints + i] = Fr.ONE;
         // Evaluate
-        const zt = Fr.sub(Fr.pow(toxic.t, BigInt(domainSize)), Fr.ONE);
         const u = poly.evaluateLagrangePolynomials(domainBits, toxic.t);
         const { pA, pB, pC } = sumABC(circuit.nVars, u, polsA, polsB, polsC, true);
         // C
@@ -620,6 +818,7 @@ export function buildSnark(
         witness: Witness,
         rnd: TArg<RandFn> = randomBytes
       ): Promise<ProofWithSignals> {
+        validateProvingInput(pkey, witness);
         witness = witness.map((i) => Fr.create(i));
         // Blinding salt for zero-knowledge
         const r = Frandom(rnd);
@@ -665,25 +864,55 @@ export function buildSnark(
         };
       },
       verifyProof(vkey: VerificationKey, proofWithSignals: ProofWithSignals): boolean {
-        const { proof, publicSignals, commitments } = proofWithSignals;
-        let cpub = pippenger(G1, vkey.IC.map(G1c.decode), [_1n, ...publicSignals]);
-        if (commitments) {
-          commitments.forEach((cm) => {
-            cpub = cpub.add(G1c.decode(cm));
-          });
+        try {
+          if (
+            proofWithSignals === null ||
+            typeof proofWithSignals !== 'object' ||
+            vkey === null ||
+            typeof vkey !== 'object'
+          )
+            return false;
+          const { proof, publicSignals, commitments } = proofWithSignals;
+          if (proof === null || typeof proof !== 'object' || proof.protocol !== 'groth')
+            return false;
+          if (
+            !Number.isSafeInteger(vkey.nPublic) ||
+            vkey.nPublic < 0 ||
+            !Array.isArray(vkey.IC) ||
+            vkey.IC.length !== vkey.nPublic + 1 ||
+            !Array.isArray(publicSignals) ||
+            publicSignals.length !== vkey.nPublic ||
+            !publicSignals.every(isCanonicalFr)
+          )
+            return false;
+          const piA = decodeCanonicalG1(proof.pi_a);
+          const piB = decodeCanonicalG2(proof.pi_b);
+          const piC = decodeCanonicalG1(proof.pi_c);
+          let cpub = pippenger(G1, vkey.IC.map(G1c.decode), [_1n, ...publicSignals]);
+          if (commitments !== undefined) {
+            if (!Array.isArray(commitments)) return false;
+            for (const commitment of commitments) {
+              const point = decodeCanonicalG1(commitment);
+              point.assertValidity();
+              cpub = cpub.add(point);
+            }
+          }
+          // old e(pi_a, pi_b) = alfa_beta * e(cpub, gamma_2) * e(pi_c, delta_2)
+          // new: e(-pi_a, pi_b) * e(cpub, gamma_2) * e(pi_c, delta_2) * e(alfa_1, beta_2) = 1
+          // Major difference: old version uses pre-computed alfa_beta,
+          // but this makes it incompatible with noble, because we use cyclomatic exp
+          // (Fp12 values different even if math is same).
+          // pairingBatch validates every proof point's curve and subgroup membership.
+          const newRes = curve.pairingBatch([
+            { g1: piA.negate(), g2: piB },
+            { g1: cpub, g2: G2c.decode(vkey.vk_gamma_2) },
+            { g1: piC, g2: G2c.decode(vkey.vk_delta_2) },
+            { g1: G1c.decode(vkey.vk_alfa_1), g2: G2c.decode(vkey.vk_beta_2) },
+          ]);
+          return Fp12.eql(newRes, Fp12.ONE);
+        } catch {
+          return false;
         }
-        // old e(pi_a, pi_b) = alfa_beta * e(cpub, gamma_2) * e(pi_c, delta_2)
-        // new: e(-pi_a, pi_b) * e(cpub, gamma_2) * e(pi_c, delta_2) * e(alfa_1, beta_2) = 1
-        // Major difference: old version uses pre-computed alfa_beta,
-        // but this makes it incompatible with noble, because we use cyclomatic exp
-        // (Fp12 values different even if math is same).
-        const newRes = curve.pairingBatch([
-          { g1: G1c.decode(proof.pi_a).negate(), g2: G2c.decode(proof.pi_b) },
-          { g1: cpub, g2: G2c.decode(vkey.vk_gamma_2) },
-          { g1: G1c.decode(proof.pi_c), g2: G2c.decode(vkey.vk_delta_2) },
-          { g1: G1c.decode(vkey.vk_alfa_1), g2: G2c.decode(vkey.vk_beta_2) },
-        ]);
-        return Fp12.eql(newRes, Fp12.ONE);
       },
     }),
   }) as TRet<SnarkConstructorOutput>;
