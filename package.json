@@ -11,15 +11,15 @@
     "@noble/ciphers": "2.4.0",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
-    "micro-packed": "0.11.0",
+    "micro-packed": "0.11.1",
     "micro-wrkr": "~0.2.0"
   },
   "devDependencies": {
-    "@paulmillr/jsbt": "0.7.1",
-    "bismar": "0.1.8",
+    "@paulmillr/jsbt": "0.7.2",
+    "bismar": "0.1.9",
     "@types/node": "26.3.0",
     "prettier": "3.9.6",
-    "typescript": "6.0.3"
+    "typescript": "7.0.2"
   },
   "scripts": {
     "benchmark:size": "bismar -bsm",
